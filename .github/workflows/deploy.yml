@@ -52,6 +52,9 @@ jobs:
           echo "${{ secrets.PROD_ENV_FILE }}" > .env
           echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}" >> .env
 
+          # 1-1. prod compose를 기본 compose 파일로 복사
+          cp -f docker-compose.prod.yml docker-compose.yml
+
           # 2. 인증서 유무에 따라 Nginx 설정 선택
           if [ -f "$CERT_PATH" ]; then
             echo "NGINX_CONF_FILE=nginx.conf" >> .env
@@ -62,12 +65,12 @@ jobs:
           # 3. 최신 이미지 배포
           sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
           sudo docker pull ${{ secrets.DOCKER_USERNAME }}/aws-quiz-be:main
-          sudo docker compose -f docker-compose.prod.yml up -d --force-recreate
+          sudo docker compose up -d --force-recreate
 
           # 4. SSL 인증서가 없으면 최초 발급, 있으면 갱신
           if [ ! -f "$CERT_PATH" ]; then
             echo "ℹ️ SSL 인증서 없음 - 최초 발급 진행"
-            sudo docker compose -f docker-compose.prod.yml run --rm certbot certonly \
+            sudo docker compose run --rm certbot certonly \
               --webroot -w /var/www/certbot \
               -d api.awsquizkr.com \
               --email "${{ secrets.LETSENCRYPT_EMAIL }}" \
@@ -76,14 +79,14 @@ jobs:
             if [ -f "$CERT_PATH" ]; then
               echo "✅ 인증서 발급 성공 - HTTPS 설정으로 전환"
               sed -i 's/^NGINX_CONF_FILE=.*/NGINX_CONF_FILE=nginx.conf/' .env
-              sudo docker compose -f docker-compose.prod.yml up -d --force-recreate nginx
+              sudo docker compose up -d --force-recreate nginx
             else
               echo "❌ 인증서 발급 실패 - DNS/보안그룹/도메인 연결 확인 필요"
               exit 1
             fi
           else
-            sudo docker compose -f docker-compose.prod.yml run --rm certbot renew --quiet || true
-            sudo docker compose -f docker-compose.prod.yml restart nginx || true
+            sudo docker compose run --rm certbot renew --quiet || true
+            sudo docker compose restart nginx || true
           fi
 
           # 5. 안 쓰는 이미지 청소
