@@ -43,6 +43,7 @@ jobs:
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
           set -e
+          CERT_PATH="/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem"
           mkdir -p /home/ec2-user/aws-quiz-be
           cd /home/ec2-user/aws-quiz-be
 
@@ -52,7 +53,7 @@ jobs:
           echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}" >> .env
 
           # 2. 인증서 유무에 따라 Nginx 설정 선택
-          if [ -f "/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+          if [ -f "$CERT_PATH" ]; then
             echo "NGINX_CONF_FILE=nginx.conf" >> .env
           else
             echo "NGINX_CONF_FILE=nginx.conf.init" >> .env
@@ -63,8 +64,24 @@ jobs:
           sudo docker pull ${{ secrets.DOCKER_USERNAME }}/aws-quiz-be:main
           sudo docker compose -f docker-compose.prod.yml up -d --force-recreate
 
-          # 4. SSL 인증서가 있는 경우만 갱신 시도
-          if [ -f "/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+          # 4. SSL 인증서가 없으면 최초 발급, 있으면 갱신
+          if [ ! -f "$CERT_PATH" ]; then
+            echo "ℹ️ SSL 인증서 없음 - 최초 발급 진행"
+            sudo docker compose -f docker-compose.prod.yml run --rm certbot certonly \
+              --webroot -w /var/www/certbot \
+              -d api.awsquizkr.com \
+              --email "${{ secrets.LETSENCRYPT_EMAIL }}" \
+              --agree-tos --no-eff-email --non-interactive
+
+            if [ -f "$CERT_PATH" ]; then
+              echo "✅ 인증서 발급 성공 - HTTPS 설정으로 전환"
+              sed -i 's/^NGINX_CONF_FILE=.*/NGINX_CONF_FILE=nginx.conf/' .env
+              sudo docker compose -f docker-compose.prod.yml up -d --force-recreate nginx
+            else
+              echo "❌ 인증서 발급 실패 - DNS/보안그룹/도메인 연결 확인 필요"
+              exit 1
+            fi
+          else
             sudo docker compose -f docker-compose.prod.yml run --rm certbot renew --quiet || true
             sudo docker compose -f docker-compose.prod.yml restart nginx || true
           fi
