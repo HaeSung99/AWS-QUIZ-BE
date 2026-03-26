@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { Roles } from '../common/roles.decorator';
 import { RolesGuard } from '../common/roles.guard';
 import { AdminService } from './admin.service';
@@ -23,7 +24,15 @@ import { UpdateQuestionDto } from './dto/update-question.dto';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly analyticsService: AnalyticsService,
+  ) {}
+
+  @Get('stats/overview')
+  getStatsOverview() {
+    return this.analyticsService.getAdminOverview();
+  }
 
   @Post('notices')
   createNotice(@Body() dto: CreateNoticeDto) {

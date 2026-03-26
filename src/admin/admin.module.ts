@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AnalyticsModule } from '../analytics/analytics.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { PublicController } from './public.controller';
@@ -12,6 +13,7 @@ import {
 
 @Module({
   imports: [
+    AnalyticsModule,
     MongooseModule.forFeature([
       { name: Notice.name, schema: NoticeSchema },
       { name: Question.name, schema: QuestionSchema },

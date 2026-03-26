@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { AdminModule } from './admin/admin.module';
     MongooseModule.forRoot(process.env.MONGODB_URI ?? ''),
     AuthModule,
     AdminModule,
+    AnalyticsModule,
   ],
   controllers: [],
   providers: [],
