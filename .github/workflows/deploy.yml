@@ -30,21 +30,21 @@ jobs:
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
+        username: ec2-user
         key: ${{ secrets.EC2_SSH_KEY }}
         source: "docker-compose.prod.yml,nginx/"
-        target: "/home/ubuntu/aws-quiz-be"
+        target: "/home/ec2-user/aws-quiz-be"
 
     - name: Deploy to EC2
       uses: appleboy/ssh-action@master
       with:
         host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
+        username: ec2-user
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
           set -e
-          mkdir -p /home/ubuntu/aws-quiz-be
-          cd /home/ubuntu/aws-quiz-be
+          mkdir -p /home/ec2-user/aws-quiz-be
+          cd /home/ec2-user/aws-quiz-be
 
           # 1. 배포용 .env 생성
           rm -f .env
@@ -52,7 +52,7 @@ jobs:
           echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}" >> .env
 
           # 2. 인증서 유무에 따라 Nginx 설정 선택
-          if [ -f "/home/ubuntu/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+          if [ -f "/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
             echo "NGINX_CONF_FILE=nginx.conf" >> .env
           else
             echo "NGINX_CONF_FILE=nginx.conf.init" >> .env
@@ -64,7 +64,7 @@ jobs:
           sudo docker compose -f docker-compose.prod.yml up -d --force-recreate
 
           # 4. SSL 인증서가 있는 경우만 갱신 시도
-          if [ -f "/home/ubuntu/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+          if [ -f "/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
             sudo docker compose -f docker-compose.prod.yml run --rm certbot renew --quiet || true
             sudo docker compose -f docker-compose.prod.yml restart nginx || true
           fi
