@@ -1,0 +1,73 @@
+name: Deploy Main Branch
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Build and Push Backend Image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ secrets.DOCKER_USERNAME }}/aws-quiz-be:main
+        platforms: linux/amd64
+
+    - name: Copy Docker Compose and Nginx config to EC2
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ubuntu
+        key: ${{ secrets.EC2_SSH_KEY }}
+        source: "docker-compose.prod.yml,nginx/"
+        target: "/home/ubuntu/aws-quiz-be"
+
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ubuntu
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          set -e
+          mkdir -p /home/ubuntu/aws-quiz-be
+          cd /home/ubuntu/aws-quiz-be
+
+          # 1. 배포용 .env 생성
+          rm -f .env
+          echo "${{ secrets.PROD_ENV_FILE }}" > .env
+          echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}" >> .env
+
+          # 2. 인증서 유무에 따라 Nginx 설정 선택
+          if [ -f "/home/ubuntu/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+            echo "NGINX_CONF_FILE=nginx.conf" >> .env
+          else
+            echo "NGINX_CONF_FILE=nginx.conf.init" >> .env
+          fi
+
+          # 3. 최신 이미지 배포
+          sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+          sudo docker pull ${{ secrets.DOCKER_USERNAME }}/aws-quiz-be:main
+          sudo docker compose -f docker-compose.prod.yml up -d --force-recreate
+
+          # 4. SSL 인증서가 있는 경우만 갱신 시도
+          if [ -f "/home/ubuntu/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem" ]; then
+            sudo docker compose -f docker-compose.prod.yml run --rm certbot renew --quiet || true
+            sudo docker compose -f docker-compose.prod.yml restart nginx || true
+          fi
+
+          # 5. 안 쓰는 이미지 청소
+          sudo docker image prune -f
