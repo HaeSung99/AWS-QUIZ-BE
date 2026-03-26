@@ -44,15 +44,15 @@ jobs:
         script: |
           set -e
           CERT_PATH="/home/ec2-user/aws-quiz-be/certbot/conf/live/api.awsquizkr.com/fullchain.pem"
-          compose_cmd() {
-            if sudo docker compose version >/dev/null 2>&1; then
-              sudo docker compose "$@"
-            else
-              sudo docker-compose "$@"
-            fi
-          }
           mkdir -p /home/ec2-user/aws-quiz-be
           cd /home/ec2-user/aws-quiz-be
+
+          # docker compose(v2) 필수 확인
+          if ! sudo docker compose version >/dev/null 2>&1; then
+            echo "❌ docker compose(v2)가 설치되어 있지 않습니다."
+            echo "   EC2에서 docker-compose-plugin 설치 후 다시 실행하세요."
+            exit 1
+          fi
 
           # 1. 배포용 .env 생성
           rm -f .env
@@ -72,13 +72,13 @@ jobs:
           # 3. 최신 이미지 배포
           sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
           sudo docker pull ${{ secrets.DOCKER_USERNAME }}/aws-quiz-be:main
-          compose_cmd up -d --force-recreate
+          sudo docker compose up -d --force-recreate
 
           # 4. SSL 인증서가 없으면 최초 발급, 있으면 갱신
           if [ ! -f "$CERT_PATH" ]; then
             echo "ℹ️ SSL 인증서 없음 - 최초 발급 진행"
             set +e
-            compose_cmd run --rm certbot certonly \
+            sudo docker compose run --rm certbot certonly \
               --webroot -w /var/www/certbot \
               -d api.awsquizkr.com \
               --email "${{ secrets.LETSENCRYPT_EMAIL }}" \
@@ -89,14 +89,14 @@ jobs:
             if [ -f "$CERT_PATH" ]; then
               echo "✅ 인증서 발급 성공 - HTTPS 설정으로 전환"
               sed -i 's/^NGINX_CONF_FILE=.*/NGINX_CONF_FILE=nginx.conf/' .env
-              compose_cmd up -d --force-recreate nginx
+              sudo docker compose up -d --force-recreate nginx
             else
               echo "⚠️ 인증서 발급 실패(코드: $CERT_ISSUE_EXIT_CODE) - 현재는 HTTP(init)로 유지"
               echo "   DNS/보안그룹(80)/도메인 연결 확인 후 다음 배포에서 자동 재시도됩니다."
             fi
           else
-            compose_cmd run --rm certbot renew --quiet || true
-            compose_cmd restart nginx || true
+            sudo docker compose run --rm certbot renew --quiet || true
+            sudo docker compose restart nginx || true
           fi
 
           # 5. 안 쓰는 이미지 청소
