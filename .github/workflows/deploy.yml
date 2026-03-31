@@ -63,7 +63,7 @@ jobs:
           cp -f docker-compose.prod.yml docker-compose.yml
 
           # 2. 인증서 유무에 따라 Nginx 설정 선택
-          if [ -f "$CERT_PATH" ]; then
+          if sudo test -f "$CERT_PATH"; then
             echo "NGINX_CONF_FILE=nginx.conf" >> .env
           else
             echo "NGINX_CONF_FILE=nginx.conf.init" >> .env
@@ -75,7 +75,7 @@ jobs:
           sudo docker compose up -d --force-recreate
 
           # 4. SSL 인증서가 없으면 최초 발급, 있으면 갱신
-          if [ ! -f "$CERT_PATH" ]; then
+          if ! sudo test -f "$CERT_PATH"; then
             echo "ℹ️ SSL 인증서 없음 - 최초 발급 진행"
             set +e
             sudo docker compose run --rm certbot certonly \
@@ -86,7 +86,7 @@ jobs:
             CERT_ISSUE_EXIT_CODE=$?
             set -e
 
-            if [ -f "$CERT_PATH" ]; then
+            if sudo test -f "$CERT_PATH"; then
               echo "✅ 인증서 발급 성공 - HTTPS 설정으로 전환"
               sed -i 's/^NGINX_CONF_FILE=.*/NGINX_CONF_FILE=nginx.conf/' .env
               sudo docker compose up -d --force-recreate nginx

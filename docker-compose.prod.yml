@@ -4,6 +4,8 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      NODE_ENV: production
     expose:
       - "3001"
     depends_on:

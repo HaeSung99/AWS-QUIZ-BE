@@ -33,6 +33,55 @@ export class AuthService {
     return `${Math.floor(100000 + Math.random() * 900000)}`;
   }
 
+  private buildVerificationEmailHtml(code: string) {
+    return `
+      <div style="margin:0;padding:0;background-color:#f5f7fb;font-family:Arial,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:24px 12px;">
+          <tr>
+            <td align="center">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
+                <tr>
+                  <td style="background:#0f172a;padding:18px 24px;color:#f8fafc;font-size:18px;font-weight:700;">
+                    AWS Quiz KR 이메일 인증
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:24px;color:#111827;line-height:1.6;font-size:14px;">
+                    안녕하세요.<br/>
+                    AWS Quiz KR은 개발자로서 AWS 개념을 실전 퀴즈로 학습할 수 있도록 만든 서비스입니다.<br/>
+                    회원가입을 위해 아래 인증번호를 입력해주세요.
+                    <div style="margin:18px 0;padding:16px 12px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:10px;text-align:center;">
+                      <span style="display:inline-block;font-size:30px;letter-spacing:7px;font-weight:700;color:#0f172a;">${code}</span>
+                    </div>
+                    <p style="margin:0;color:#6b7280;font-size:13px;">
+                      인증번호는 <strong style="color:#111827;">10분</strong> 동안만 유효합니다.
+                    </p>
+                    <p style="margin:12px 0 0;color:#6b7280;font-size:13px;">
+                      현재 테스트 버전 특성상 데이터 손실 가능성이 있으며, 보안 설정 변경이 있을 수 있으니
+                      민감한 비밀번호 재사용은 피해주세요.
+                    </p>
+                    <p style="margin:12px 0 0;color:#6b7280;font-size:13px;">
+                      앞으로 다양한 기능을 계속 적용해 나갈 예정입니다. 사용 중 개선사항이나 문의사항이
+                      있다면 언제든지 전달해주시면 큰 도움이 됩니다.
+                    </p>
+                    <p style="margin:14px 0 0;color:#6b7280;font-size:13px;">
+                      본인이 요청하지 않았다면 이 메일을 무시해 주세요.
+                    </p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;color:#94a3b8;font-size:12px;">
+                    © AWS Quiz KR
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </div>
+    `;
+  }
+
   private async sendVerificationEmail(email: string, code: string) {
     const host = this.configService.get<string>('SMTP_HOST');
     const port = Number(this.configService.get<string>('SMTP_PORT') ?? '587');
@@ -56,7 +105,8 @@ export class AuthService {
       from,
       to: email,
       subject: '[AWS 문풀] 이메일 인증코드',
-      text: `인증코드: ${code}\n10분 안에 입력해주세요.`,
+      text: `인증코드: ${code}\n인증번호는 10분 동안 유효합니다.`,
+      html: this.buildVerificationEmailHtml(code),
     });
     return true;
   }
