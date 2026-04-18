@@ -49,13 +49,31 @@ export class AnalyticsService {
     correctCount: number;
     totalCount: number;
   }) {
-    const created = this.workbookAttemptRepository.create({
-      userId: input.userId,
-      workbookId: input.workbookId.trim(),
-      correctCount: input.correctCount,
-      totalCount: input.totalCount,
+    const workbookId = input.workbookId.trim();
+    const totalCount = input.totalCount;
+    const correctCount = input.correctCount;
+
+    const existing = await this.workbookAttemptRepository.findOne({
+      where: { userId: input.userId, workbookId },
     });
-    await this.workbookAttemptRepository.save(created);
+
+    if (totalCount <= 0) {
+      return { saved: false };
+    }
+
+    if (!existing) {
+      await this.workbookAttemptRepository.save(
+        this.workbookAttemptRepository.create({
+          userId: input.userId,
+          workbookId,
+          correctCount,
+          totalCount,
+        }),
+      );
+      return { saved: true };
+    }
+
+    // 재제출: 정답률 집계는 최초 제출 1건만 유지 (이후 제출은 DB에 반영하지 않음)
     return { saved: true };
   }
 
