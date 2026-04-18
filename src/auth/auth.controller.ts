@@ -64,6 +64,6 @@ export class AuthController {
     @Req() req: RequestWithUser,
     @Body() dto: RecordWorkbookAttemptDto,
   ) {
-    return this.authService.recordWorkbookAttempt(req.user.sub, dto);
+    return this.authService.recordWorkbookAttempt(req.user.sub, req.user.role, dto);
   }
 }

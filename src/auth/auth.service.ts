@@ -266,7 +266,14 @@ export class AuthService {
     return { solvedWorkbookIds };
   }
 
-  async recordWorkbookAttempt(userId: number, dto: RecordWorkbookAttemptDto) {
+  async recordWorkbookAttempt(
+    userId: number,
+    role: 'user' | 'admin',
+    dto: RecordWorkbookAttemptDto,
+  ) {
+    if (role === 'admin') {
+      return { saved: true, statsExcluded: true as const };
+    }
     return this.analyticsService.recordWorkbookAttempt({
       userId,
       workbookId: dto.workbookId,

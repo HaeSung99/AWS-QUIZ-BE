@@ -132,6 +132,8 @@ export class AnalyticsService {
   async getWorkbookAccuracy(limit?: number) {
     const query = this.workbookAttemptRepository
       .createQueryBuilder('a')
+      .innerJoin(User, 'u', 'u.id = a.userId')
+      .where('u.role = :userRole', { userRole: 'user' })
       .select('a.workbookId', 'workbookId')
       .addSelect('SUM(a.correctCount)', 'correctSum')
       .addSelect('SUM(a.totalCount)', 'totalSum')
