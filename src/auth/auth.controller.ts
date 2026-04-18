@@ -7,7 +7,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
+import { extractClientIp } from './client-ip.util';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RecordWorkbookAttemptDto } from './dto/record-workbook-attempt.dto';
@@ -24,8 +25,8 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('email/send-code')
-  sendEmailCode(@Body() dto: SendEmailCodeDto) {
-    return this.authService.sendEmailCode(dto);
+  sendEmailCode(@Body() dto: SendEmailCodeDto, @Req() req: Request) {
+    return this.authService.sendEmailCode(dto, extractClientIp(req));
   }
 
   @Post('email/verify')

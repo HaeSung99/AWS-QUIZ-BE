@@ -1,18 +1,23 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcryptjs';
 import * as nodemailer from 'nodemailer';
-import { Repository } from 'typeorm';
+import { MoreThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { UsersService } from '../users/users.service';
+import { EmailCodeSendLog } from './email-code-send-log.entity';
 import { EmailVerification } from './email-verification.entity';
 import { LoginDto } from './dto/login.dto';
 import { RecordWorkbookAttemptDto } from './dto/record-workbook-attempt.dto';
 import { SendEmailCodeDto } from './dto/send-email-code.dto';
 import { SignupDto } from './dto/signup.dto';
 import { VerifyEmailCodeDto } from './dto/verify-email-code.dto';
+
+const EMAIL_RESEND_COOLDOWN_MS = 120_000;
+const IP_SEND_MAX_PER_HOUR = 10;
+const IP_SEND_MAX_PER_UTC_DAY = 20;
 
 @Injectable()
 export class AuthService {
@@ -23,10 +28,17 @@ export class AuthService {
     private readonly configService: ConfigService,
     @InjectRepository(EmailVerification)
     private readonly emailVerificationRepository: Repository<EmailVerification>,
+    @InjectRepository(EmailCodeSendLog)
+    private readonly emailCodeSendLogRepository: Repository<EmailCodeSendLog>,
   ) {}
 
   private normalizeEmail(email: string) {
     return email.toLowerCase().trim();
+  }
+
+  /** UTC 자정(일일 IP 상한 기준) */
+  private utcStartOfDay(now = new Date()) {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   }
 
   private createCode() {
@@ -111,38 +123,77 @@ export class AuthService {
     return true;
   }
 
-  async sendEmailCode(dto: SendEmailCodeDto) {
+  async sendEmailCode(dto: SendEmailCodeDto, clientIp: string) {
+    const ip = (clientIp || '0.0.0.0').slice(0, 128);
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const sendsLastHour = await this.emailCodeSendLogRepository.count({
+      where: { ip, createdAt: MoreThan(hourAgo) },
+    });
+    if (sendsLastHour >= IP_SEND_MAX_PER_HOUR) {
+      throw new HttpException(
+        '같은 네트워크에서 인증메일 요청이 너무 많습니다. 1시간 후 다시 시도해 주세요.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const dayStart = this.utcStartOfDay();
+    const sendsTodayUtc = await this.emailCodeSendLogRepository.count({
+      where: { ip, createdAt: MoreThanOrEqual(dayStart) },
+    });
+    if (sendsTodayUtc >= IP_SEND_MAX_PER_UTC_DAY) {
+      throw new HttpException(
+        '오늘 이 네트워크에서 보낼 수 있는 인증메일 횟수를 초과했습니다. 내일 다시 시도해 주세요.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     const email = this.normalizeEmail(dto.email);
     const existingUser = await this.usersService.findByEmail(email);
     if (existingUser) {
       throw new UnauthorizedException('이미 가입된 이메일입니다.');
     }
 
+    const existingVerification = await this.emailVerificationRepository.findOne({
+      where: { email },
+    });
+    if (existingVerification?.lastSentAt) {
+      const elapsed = Date.now() - existingVerification.lastSentAt.getTime();
+      if (elapsed < EMAIL_RESEND_COOLDOWN_MS) {
+        const waitSec = Math.ceil((EMAIL_RESEND_COOLDOWN_MS - elapsed) / 1000);
+        throw new HttpException(
+          `같은 이메일로는 ${Math.round(EMAIL_RESEND_COOLDOWN_MS / 1000)}초에 한 번만 인증메일을 보낼 수 있습니다. 약 ${waitSec}초 후 다시 시도해 주세요.`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
+
     const code = this.createCode();
     const codeHash = await hash(code, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    const existingVerification = await this.emailVerificationRepository.findOne({
-      where: { email },
-    });
+    const sent = await this.sendVerificationEmail(email, code);
+    const isProd = this.configService.get<string>('NODE_ENV') === 'production';
 
+    const sentAt = new Date();
     if (existingVerification) {
       existingVerification.codeHash = codeHash;
       existingVerification.expiresAt = expiresAt;
       existingVerification.verifiedAt = null;
+      existingVerification.lastSentAt = sentAt;
       await this.emailVerificationRepository.save(existingVerification);
     } else {
-      const created = this.emailVerificationRepository.create({
-        email,
-        codeHash,
-        expiresAt,
-        verifiedAt: null,
-      });
-      await this.emailVerificationRepository.save(created);
+      await this.emailVerificationRepository.save(
+        this.emailVerificationRepository.create({
+          email,
+          codeHash,
+          expiresAt,
+          verifiedAt: null,
+          lastSentAt: sentAt,
+        }),
+      );
     }
 
-    const sent = await this.sendVerificationEmail(email, code);
-    const isProd = this.configService.get<string>('NODE_ENV') === 'production';
+    await this.emailCodeSendLogRepository.save(this.emailCodeSendLogRepository.create({ ip }));
 
     return {
       message: sent

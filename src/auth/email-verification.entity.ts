@@ -23,6 +23,10 @@ export class EmailVerification {
   @Column({ type: 'datetime', nullable: true })
   verifiedAt: Date | null;
 
+  /** 마지막으로 인증메일을 발송한 시각(이메일당 재발송 쿨다운용) */
+  @Column({ type: 'datetime', nullable: true })
+  lastSentAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

@@ -7,6 +7,7 @@ import { AnalyticsModule } from '../analytics/analytics.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { EmailCodeSendLog } from './email-code-send-log.entity';
 import { EmailVerification } from './email-verification.entity';
 import { JwtStrategy } from './jwt.strategy';
 
@@ -15,7 +16,7 @@ import { JwtStrategy } from './jwt.strategy';
     UsersModule,
     AnalyticsModule,
     PassportModule,
-    TypeOrmModule.forFeature([EmailVerification]),
+    TypeOrmModule.forFeature([EmailVerification, EmailCodeSendLog]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
