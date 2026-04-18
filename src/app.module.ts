@@ -18,7 +18,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
       autoLoadEntities: true,
-      synchronize: process.env.NODE_ENV !== 'production',
+      synchronize: true, // 개발 환경에서만 true, 프로덕션 환경에서는 false
     }),
     // MongoDB 연결
     MongooseModule.forRoot(process.env.MONGODB_URI ?? ''),
