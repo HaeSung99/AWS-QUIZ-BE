@@ -2,11 +2,13 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
 @Entity('workbook_attempts')
-/** 최초 제출 정책은 서비스 레이어에서 제어 */
+/** 사용자·문제집당 1행 = 최초 제출 점수만 저장, 재제출은 집계에 반영하지 않음 */
+@Index(['userId', 'workbookId'], { unique: true })
 export class WorkbookAttempt {
   @PrimaryGeneratedColumn()
   id: number;
