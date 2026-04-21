@@ -22,7 +22,7 @@ export class PublicController {
 
   @Get('workbooks')
   getWorkbooks() {
-    return this.adminService.getQuestions();
+    return this.adminService.getPublicQuestions();
   }
 
   @Get('workbooks/accuracy')

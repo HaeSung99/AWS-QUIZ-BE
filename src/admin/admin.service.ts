@@ -36,12 +36,20 @@ export class AdminService {
   }
 
   private toQuestionResponse(question: QuestionDocument) {
+    const createdAtRaw = question.get('createdAt');
+    const updatedAtRaw = question.get('updatedAt');
+    const createdAt =
+      createdAtRaw instanceof Date ? createdAtRaw.toISOString() : null;
+    const updatedAt =
+      updatedAtRaw instanceof Date ? updatedAtRaw.toISOString() : null;
     return {
       id: question._id.toString(),
       certificationType: question.certificationType,
       title: question.title,
       summary: question.summary,
       questionCount: question.questionCount,
+      createdAt,
+      updatedAt,
     };
   }
 
@@ -113,6 +121,59 @@ export class AdminService {
       .sort({ createdAt: -1 })
       .exec();
     return questions.map((question) => this.toQuestionResponse(question));
+  }
+
+  async getPublicQuestions() {
+    const rows = await this.questionModel.aggregate<
+      Question & {
+        _id: Types.ObjectId;
+        itemCount: number;
+        createdAt?: Date | null;
+        updatedAt?: Date | null;
+      }
+    >([
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: 'question_items',
+          localField: '_id',
+          foreignField: 'questionId',
+          as: 'items',
+        },
+      },
+      {
+        $addFields: {
+          itemCount: { $size: '$items' },
+        },
+      },
+      {
+        $match: {
+          $expr: { $gte: ['$itemCount', '$questionCount'] },
+        },
+      },
+      {
+        $project: {
+          items: 0,
+          itemCount: 0,
+        },
+      },
+    ]);
+
+    return rows.map((question) => ({
+      id: String(question._id),
+      certificationType: question.certificationType,
+      title: question.title,
+      summary: question.summary,
+      questionCount: question.questionCount,
+      createdAt:
+        question.createdAt instanceof Date
+          ? question.createdAt.toISOString()
+          : null,
+      updatedAt:
+        question.updatedAt instanceof Date
+          ? question.updatedAt.toISOString()
+          : null,
+    }));
   }
 
   async updateQuestion(questionId: string, dto: UpdateQuestionDto) {
