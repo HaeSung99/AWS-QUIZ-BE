@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class UpdateQuestionDto {
   @IsOptional()
@@ -17,4 +17,8 @@ export class UpdateQuestionDto {
   @IsInt()
   @Min(1)
   questionCount?: number;
+
+  @IsOptional()
+  @IsIn(['draft', 'published'])
+  status?: 'draft' | 'published';
 }

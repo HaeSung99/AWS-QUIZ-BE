@@ -48,6 +48,7 @@ export class AdminService {
       title: question.title,
       summary: question.summary,
       questionCount: question.questionCount,
+      status: question.status === 'draft' ? 'draft' : 'published',
       createdAt,
       updatedAt,
     };
@@ -111,6 +112,7 @@ export class AdminService {
       title: dto.title,
       summary: dto.summary,
       questionCount: dto.questionCount,
+      status: 'draft',
     });
     return this.toQuestionResponse(created);
   }
@@ -118,7 +120,7 @@ export class AdminService {
   async getQuestions() {
     const questions = await this.questionModel
       .find()
-      .sort({ createdAt: -1 })
+      .sort({ updatedAt: -1 })
       .exec();
     return questions.map((question) => this.toQuestionResponse(question));
   }
@@ -132,7 +134,10 @@ export class AdminService {
         updatedAt?: Date | null;
       }
     >([
-      { $sort: { createdAt: -1 } },
+      {
+        $match: { status: { $ne: 'draft' } },
+      },
+      { $sort: { updatedAt: -1, createdAt: -1 } },
       {
         $lookup: {
           from: 'question_items',
@@ -187,6 +192,7 @@ export class AdminService {
     if (dto.title !== undefined) question.title = dto.title;
     if (dto.summary !== undefined) question.summary = dto.summary;
     if (dto.questionCount !== undefined) question.questionCount = dto.questionCount;
+    if (dto.status !== undefined) question.status = dto.status;
     const saved = await question.save();
     return this.toQuestionResponse(saved);
   }
@@ -242,6 +248,25 @@ export class AdminService {
       .find({ questionId: new Types.ObjectId(questionId) })
       .sort({ questionNumber: 1 })
       .exec();
+    return items.map((item) => this.toQuestionItemResponse(item));
+  }
+
+  /** 공개(비로그인·일반) 퀴즈: 게시됨 + 문항 수 충족 시에만 */
+  async getPublicQuestionItems(questionId: string) {
+    const question = await this.questionModel.findById(questionId).exec();
+    if (!question) {
+      throw new NotFoundException('문제집을 찾을 수 없습니다.');
+    }
+    if (question.status === 'draft') {
+      throw new NotFoundException('문제집을 찾을 수 없습니다.');
+    }
+    const items = await this.questionItemModel
+      .find({ questionId: new Types.ObjectId(questionId) })
+      .sort({ questionNumber: 1 })
+      .exec();
+    if (items.length < question.questionCount) {
+      throw new NotFoundException('문제집을 찾을 수 없습니다.');
+    }
     return items.map((item) => this.toQuestionItemResponse(item));
   }
 

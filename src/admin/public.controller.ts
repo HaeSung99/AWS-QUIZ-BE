@@ -32,6 +32,6 @@ export class PublicController {
 
   @Get('workbooks/:workbookId/items')
   getWorkbookItems(@Param('workbookId') workbookId: string) {
-    return this.adminService.getQuestionItems(workbookId);
+    return this.adminService.getPublicQuestionItems(workbookId);
   }
 }

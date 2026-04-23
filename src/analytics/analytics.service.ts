@@ -156,27 +156,35 @@ export class AnalyticsService {
     const questions = workbookIds.length
       ? await this.questionModel
           .find({ _id: { $in: workbookIds } })
-          .select({ _id: 1, title: 1 })
+          .select({ _id: 1, title: 1, status: 1 })
           .lean()
           .exec()
       : [];
 
     const titleMap = new Map<string, string>();
+    const publishedIds = new Set<string>();
     for (const question of questions) {
-      titleMap.set(String(question._id), question.title);
+      const id = String(question._id);
+      titleMap.set(id, question.title);
+      const st = (question as { status?: string }).status;
+      if (st !== 'draft') {
+        publishedIds.add(id);
+      }
     }
 
-    return rows.map((row) => {
-      const correct = Number(row.correctSum);
-      const total = Number(row.totalSum);
-      const accuracy = total > 0 ? Number(((correct / total) * 100).toFixed(1)) : 0;
-      return {
-        workbookId: row.workbookId,
-        title: titleMap.get(row.workbookId) ?? row.workbookId,
-        accuracy,
-        attemptCount: Number(row.attemptCount),
-      };
-    });
+    return rows
+      .filter((row) => publishedIds.has(row.workbookId))
+      .map((row) => {
+        const correct = Number(row.correctSum);
+        const total = Number(row.totalSum);
+        const accuracy = total > 0 ? Number(((correct / total) * 100).toFixed(1)) : 0;
+        return {
+          workbookId: row.workbookId,
+          title: titleMap.get(row.workbookId) ?? row.workbookId,
+          accuracy,
+          attemptCount: Number(row.attemptCount),
+        };
+      });
   }
 
   async getAdminOverview() {
