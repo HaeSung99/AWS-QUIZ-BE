@@ -116,7 +116,7 @@ export class AuthService {
     await transporter.sendMail({
       from,
       to: email,
-      subject: '[AWS 문풀] 이메일 인증코드',
+      subject: '[AWS Quiz KR] 이메일 인증코드',
       text: `인증코드: ${code}\n인증번호는 10분 동안 유효합니다.`,
       html: this.buildVerificationEmailHtml(code),
     });
