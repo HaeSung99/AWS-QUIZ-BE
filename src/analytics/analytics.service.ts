@@ -9,6 +9,8 @@ import { VisitLog } from './entities/visit-log.entity';
 import { WorkbookAttempt } from './entities/workbook-attempt.entity';
 import { Question, QuestionDocument } from '../admin/schemas/question.schema';
 
+type VisitorType = 'human' | 'bot' | 'unknown';
+
 @Injectable()
 export class AnalyticsService {
   constructor(
@@ -26,7 +28,64 @@ export class AnalyticsService {
     return date.toISOString().slice(0, 10);
   }
 
-  async trackVisit(dto: TrackVisitDto) {
+  private isBotUserAgent(userAgent?: string | null) {
+    if (!userAgent) return false;
+    return /bot|crawler|spider|googlebot|naverbot|bingbot|duckduckbot|baiduspider|yandexbot|facebookexternalhit|slurp/i.test(
+      userAgent,
+    );
+  }
+
+  private classifyVisit(visit: VisitLog): VisitorType {
+    if (this.isBotUserAgent(visit.userAgent)) return 'bot';
+    const humanSignalCount = [
+      visit.hasDwell,
+      visit.hasScroll,
+      visit.hasClick,
+      visit.hasSearchInput,
+      visit.hasQuizEnter,
+      visit.hasAnswerSelect,
+      visit.hasQuizSubmit,
+    ].filter(Boolean).length;
+    if (visit.isLoggedIn || humanSignalCount >= 2) {
+      return 'human';
+    }
+    return 'unknown';
+  }
+
+  private applyVisitEvent(visit: VisitLog, dto: TrackVisitDto) {
+    if (dto.isLoggedIn) visit.isLoggedIn = true;
+    switch (dto.eventType) {
+      case 'dwell_5s':
+        visit.hasDwell = true;
+        break;
+      case 'scroll':
+        visit.hasScroll = true;
+        break;
+      case 'click':
+        visit.hasClick = true;
+        break;
+      case 'search_input':
+        visit.hasSearchInput = true;
+        break;
+      case 'quiz_enter':
+        visit.hasQuizEnter = true;
+        break;
+      case 'answer_select':
+        visit.hasAnswerSelect = true;
+        break;
+      case 'quiz_submit':
+        visit.hasQuizSubmit = true;
+        break;
+      case 'login':
+        visit.isLoggedIn = true;
+        break;
+      case 'page_view':
+      default:
+        break;
+    }
+  }
+
+  async trackVisit(dto: TrackVisitDto, meta?: { userAgent?: string | null }) {
     const clientKey = dto.clientKey.trim();
     if (!clientKey) return { tracked: false };
     const viewedOn = this.dateString();
@@ -35,12 +94,24 @@ export class AnalyticsService {
       where: { clientKey, viewedOn },
     });
     if (existing) {
-      return { tracked: true };
+      if (!existing.userAgent && meta?.userAgent) {
+        existing.userAgent = meta.userAgent.slice(0, 512);
+      }
+      this.applyVisitEvent(existing, dto);
+      existing.visitorType = this.classifyVisit(existing);
+      await this.visitLogRepository.save(existing);
+      return { tracked: true, visitorType: existing.visitorType };
     }
 
-    const created = this.visitLogRepository.create({ clientKey, viewedOn });
+    const created = this.visitLogRepository.create({
+      clientKey,
+      viewedOn,
+      userAgent: meta?.userAgent ? meta.userAgent.slice(0, 512) : null,
+    });
+    this.applyVisitEvent(created, dto);
+    created.visitorType = this.classifyVisit(created);
     await this.visitLogRepository.save(created);
-    return { tracked: true };
+    return { tracked: true, visitorType: created.visitorType };
   }
 
   async recordWorkbookAttempt(input: {
@@ -108,12 +179,36 @@ export class AnalyticsService {
       .createQueryBuilder('v')
       .select('v.viewedOn', 'date')
       .addSelect('COUNT(*)', 'count')
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType = 'human' THEN 1 ELSE 0 END)",
+        'human',
+      )
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType = 'bot' THEN 1 ELSE 0 END)",
+        'bot',
+      )
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
+        'unknown',
+      )
       .where('v.viewedOn >= DATE_SUB(CURDATE(), INTERVAL :days DAY)', { days })
       .groupBy('v.viewedOn')
       .orderBy('v.viewedOn', 'ASC')
-      .getRawMany<{ date: string; count: string }>();
+      .getRawMany<{
+        date: string;
+        count: string;
+        human: string | null;
+        bot: string | null;
+        unknown: string | null;
+      }>();
 
-    return rows.map((row) => ({ date: row.date, count: Number(row.count) }));
+    return rows.map((row) => ({
+      date: row.date,
+      count: Number(row.count),
+      human: Number(row.human ?? 0),
+      bot: Number(row.bot ?? 0),
+      unknown: Number(row.unknown ?? 0),
+    }));
   }
 
   private async buildMonthlyVisitors(months = 12) {
@@ -121,12 +216,36 @@ export class AnalyticsService {
       .createQueryBuilder('v')
       .select("DATE_FORMAT(v.viewedOn, '%Y-%m')", 'month')
       .addSelect('COUNT(*)', 'count')
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType = 'human' THEN 1 ELSE 0 END)",
+        'human',
+      )
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType = 'bot' THEN 1 ELSE 0 END)",
+        'bot',
+      )
+      .addSelect(
+        "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
+        'unknown',
+      )
       .where('v.viewedOn >= DATE_SUB(CURDATE(), INTERVAL :months MONTH)', { months })
       .groupBy("DATE_FORMAT(v.viewedOn, '%Y-%m')")
       .orderBy("DATE_FORMAT(v.viewedOn, '%Y-%m')", 'ASC')
-      .getRawMany<{ month: string; count: string }>();
+      .getRawMany<{
+        month: string;
+        count: string;
+        human: string | null;
+        bot: string | null;
+        unknown: string | null;
+      }>();
 
-    return rows.map((row) => ({ month: row.month, count: Number(row.count) }));
+    return rows.map((row) => ({
+      month: row.month,
+      count: Number(row.count),
+      human: Number(row.human ?? 0),
+      bot: Number(row.bot ?? 0),
+      unknown: Number(row.unknown ?? 0),
+    }));
   }
 
   async getWorkbookAccuracy(limit?: number) {

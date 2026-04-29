@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { TrackVisitDto } from '../analytics/dto/track-visit.dto';
 import { AdminService } from './admin.service';
@@ -11,8 +12,11 @@ export class PublicController {
   ) {}
 
   @Post('track-visit')
-  trackVisit(@Body() dto: TrackVisitDto) {
-    return this.analyticsService.trackVisit(dto);
+  trackVisit(@Body() dto: TrackVisitDto, @Req() req: Request) {
+    const userAgent = req.headers['user-agent'];
+    return this.analyticsService.trackVisit(dto, {
+      userAgent: typeof userAgent === 'string' ? userAgent : null,
+    });
   }
 
   @Get('notices')

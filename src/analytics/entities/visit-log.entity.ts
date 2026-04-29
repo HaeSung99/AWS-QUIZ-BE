@@ -18,6 +18,36 @@ export class VisitLog {
   @Column({ type: 'date' })
   viewedOn: string;
 
+  @Column({ length: 512, nullable: true })
+  userAgent: string | null;
+
+  @Column({ default: false })
+  hasDwell: boolean;
+
+  @Column({ default: false })
+  hasScroll: boolean;
+
+  @Column({ default: false })
+  hasClick: boolean;
+
+  @Column({ default: false })
+  hasSearchInput: boolean;
+
+  @Column({ default: false })
+  hasQuizEnter: boolean;
+
+  @Column({ default: false })
+  hasAnswerSelect: boolean;
+
+  @Column({ default: false })
+  hasQuizSubmit: boolean;
+
+  @Column({ default: false })
+  isLoggedIn: boolean;
+
+  @Column({ type: 'varchar', length: 16, default: 'unknown' })
+  visitorType: 'human' | 'bot' | 'unknown';
+
   @CreateDateColumn()
   createdAt: Date;
 }
