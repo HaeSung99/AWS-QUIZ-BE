@@ -18,7 +18,7 @@ export class VisitLog {
   @Column({ type: 'date' })
   viewedOn: string;
 
-  @Column({ length: 512, nullable: true })
+  @Column({ type: 'varchar', length: 512, nullable: true })
   userAgent: string | null;
 
   @Column({ default: false })
