@@ -24,8 +24,10 @@ export class AnalyticsService {
     private readonly questionModel: Model<QuestionDocument>,
   ) {}
 
+  private readonly kstOffsetMs = 9 * 60 * 60 * 1000;
+
   private dateString(date = new Date()) {
-    return date.toISOString().slice(0, 10);
+    return new Date(date.getTime() + this.kstOffsetMs).toISOString().slice(0, 10);
   }
 
   private isBotUserAgent(userAgent?: string | null) {
@@ -151,11 +153,14 @@ export class AnalyticsService {
   private async buildDailyUserSignups(days = 30) {
     const rows = await this.usersRepository
       .createQueryBuilder('u')
-      .select("DATE_FORMAT(u.createdAt, '%Y-%m-%d')", 'date')
+      .select("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')", 'date')
       .addSelect('COUNT(*)', 'count')
-      .where('u.createdAt >= DATE_SUB(CURDATE(), INTERVAL :days DAY)', { days })
-      .groupBy("DATE_FORMAT(u.createdAt, '%Y-%m-%d')")
-      .orderBy("DATE_FORMAT(u.createdAt, '%Y-%m-%d')", 'ASC')
+      .where(
+        "DATE_ADD(u.createdAt, INTERVAL 9 HOUR) >= DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR), INTERVAL :days DAY)",
+        { days },
+      )
+      .groupBy("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')")
+      .orderBy("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')", 'ASC')
       .getRawMany<{ date: string; count: string }>();
 
     return rows.map((row) => ({ date: row.date, count: Number(row.count) }));
@@ -164,11 +169,14 @@ export class AnalyticsService {
   private async buildMonthlyUserSignups(months = 12) {
     const rows = await this.usersRepository
       .createQueryBuilder('u')
-      .select("DATE_FORMAT(u.createdAt, '%Y-%m')", 'month')
+      .select("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')", 'month')
       .addSelect('COUNT(*)', 'count')
-      .where('u.createdAt >= DATE_SUB(CURDATE(), INTERVAL :months MONTH)', { months })
-      .groupBy("DATE_FORMAT(u.createdAt, '%Y-%m')")
-      .orderBy("DATE_FORMAT(u.createdAt, '%Y-%m')", 'ASC')
+      .where(
+        "DATE_ADD(u.createdAt, INTERVAL 9 HOUR) >= DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR), INTERVAL :months MONTH)",
+        { months },
+      )
+      .groupBy("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')")
+      .orderBy("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')", 'ASC')
       .getRawMany<{ month: string; count: string }>();
 
     return rows.map((row) => ({ month: row.month, count: Number(row.count) }));
@@ -191,7 +199,9 @@ export class AnalyticsService {
         "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
         'unknown',
       )
-      .where('v.viewedOn >= DATE_SUB(CURDATE(), INTERVAL :days DAY)', { days })
+      .where("v.viewedOn >= DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)), INTERVAL :days DAY)", {
+        days,
+      })
       .groupBy('v.viewedOn')
       .orderBy('v.viewedOn', 'ASC')
       .getRawMany<{
@@ -228,7 +238,10 @@ export class AnalyticsService {
         "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
         'unknown',
       )
-      .where('v.viewedOn >= DATE_SUB(CURDATE(), INTERVAL :months MONTH)', { months })
+      .where(
+        "v.viewedOn >= DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)), INTERVAL :months MONTH)",
+        { months },
+      )
       .groupBy("DATE_FORMAT(v.viewedOn, '%Y-%m')")
       .orderBy("DATE_FORMAT(v.viewedOn, '%Y-%m')", 'ASC')
       .getRawMany<{
