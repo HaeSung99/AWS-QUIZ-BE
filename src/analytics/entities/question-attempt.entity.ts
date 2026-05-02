@@ -19,6 +19,9 @@ export class QuestionAttempt {
   @Column({ type: 'varchar', length: 64, nullable: true })
   workbookId: string | null;
 
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  certificationType: string | null;
+
   @Column({ type: 'varchar', length: 64 })
   questionId: string;
 

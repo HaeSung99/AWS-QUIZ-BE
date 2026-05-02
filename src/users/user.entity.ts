@@ -30,6 +30,9 @@ export class User {
   @Column({ type: 'simple-json', nullable: true })
   solvedWorkbookIds: string[];
 
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  targetCertificationType: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

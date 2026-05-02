@@ -397,7 +397,10 @@ export class AdminService {
       .find({ questionId: new Types.ObjectId(questionId) })
       .sort({ questionNumber: 1 })
       .exec();
-    return items.map((item) => this.toQuestionItemResponse(item));
+    return items.map((item) => ({
+      ...this.toQuestionItemResponse(item),
+      certificationType: question.certificationType,
+    }));
   }
 
   /** 공개(비로그인·일반) 퀴즈: 게시됨 + 문항 수 충족 시에만 */
@@ -431,7 +434,7 @@ export class AdminService {
     // 1. 공개된 문제집의 문항만 유형별 연습 후보로 사용한다.
     const publishedQuestions = await this.questionModel
       .find({ status: { $ne: 'draft' } })
-      .select({ _id: 1 })
+      .select({ _id: 1, certificationType: 1 })
       .lean()
       .exec();
     const publishedQuestionIds = publishedQuestions.map(
@@ -456,6 +459,10 @@ export class AdminService {
     return items.map((item, index) => ({
       ...this.toQuestionItemResponse(item),
       questionNumber: index + 1,
+      certificationType:
+        publishedQuestions.find(
+          (question) => String(question._id) === item.questionId.toString(),
+        )?.certificationType ?? null,
     }));
   }
 

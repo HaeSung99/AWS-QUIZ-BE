@@ -3,6 +3,30 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './user.entity';
 
+const AWS_CERTIFICATION_OPTIONS = [
+  'SAA-C03',
+  'CLF-C02',
+  'DVA-C02',
+  'SOA-C02',
+  'SAP-C02',
+  'DOP-C02',
+  'SCS-C02',
+  'ANS-C01',
+  'MLS-C01',
+  'DEA-C01',
+  'AIF-C01',
+] as const;
+
+function normalizeTargetCertification(value?: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === '정하지 않음') return null;
+  return AWS_CERTIFICATION_OPTIONS.includes(
+    trimmed as (typeof AWS_CERTIFICATION_OPTIONS)[number],
+  )
+    ? trimmed
+    : null;
+}
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -21,6 +45,7 @@ export class UsersService {
         'password',
         'role',
         'solvedWorkbookIds',
+        'targetCertificationType',
         'createdAt',
         'updatedAt',
       ],
@@ -37,6 +62,25 @@ export class UsersService {
         'name',
         'role',
         'solvedWorkbookIds',
+        'targetCertificationType',
+        'createdAt',
+        'updatedAt',
+      ],
+    });
+  }
+
+  async findByIdWithPassword(id: number): Promise<User | null> {
+    // 1. 비밀번호 변경처럼 현재 비밀번호 검증이 필요한 경우에만 password를 함께 조회한다.
+    return this.usersRepository.findOne({
+      where: { id },
+      select: [
+        'id',
+        'email',
+        'name',
+        'password',
+        'role',
+        'solvedWorkbookIds',
+        'targetCertificationType',
         'createdAt',
         'updatedAt',
       ],
@@ -47,6 +91,7 @@ export class UsersService {
     email: string;
     name: string;
     password: string;
+    targetCertificationType?: string | null;
   }): Promise<User> {
     // 1. 이메일과 이름을 정리한 뒤 일반 사용자 기본값으로 계정을 만든다.
     const user = this.usersRepository.create({
@@ -54,8 +99,31 @@ export class UsersService {
       name: input.name.trim(),
       password: input.password,
       solvedWorkbookIds: [],
+      targetCertificationType: normalizeTargetCertification(
+        input.targetCertificationType,
+      ),
     });
     return this.usersRepository.save(user);
+  }
+
+  async updateTargetCertification(
+    userId: number,
+    targetCertificationType?: string | null,
+  ): Promise<User | null> {
+    // 1. 사용자를 찾고, 목표 자격증은 허용된 값 또는 null로만 저장한다.
+    const user = await this.findById(userId);
+    if (!user) return null;
+
+    user.targetCertificationType = normalizeTargetCertification(
+      targetCertificationType,
+    );
+    return this.usersRepository.save(user);
+  }
+
+  async updatePassword(userId: number, password: string): Promise<boolean> {
+    // 1. 비밀번호 해시는 AuthService에서 만든 뒤 저장만 담당한다.
+    const result = await this.usersRepository.update(userId, { password });
+    return Boolean(result.affected && result.affected > 0);
   }
 
   async addSolvedWorkbook(

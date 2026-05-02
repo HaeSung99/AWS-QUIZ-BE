@@ -14,16 +14,44 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { UsersService } from '../users/users.service';
 import { EmailCodeSendLog } from './email-code-send-log.entity';
 import { EmailVerification } from './email-verification.entity';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RecordWorkbookAttemptDto } from './dto/record-workbook-attempt.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SendEmailCodeDto } from './dto/send-email-code.dto';
 import { SignupDto } from './dto/signup.dto';
+import { UpdateTargetCertificationDto } from './dto/update-target-certification.dto';
 import { VerifyEmailCodeDto } from './dto/verify-email-code.dto';
 
 const EMAIL_RESEND_COOLDOWN_MS = 120_000;
 const IP_SEND_MAX_PER_HOUR = 10;
 const IP_SEND_MAX_PER_KST_DAY = 20;
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const SIGNUP_EMAIL_PURPOSE = 'signup' as const;
+const PASSWORD_RESET_EMAIL_PURPOSE = 'password_reset' as const;
+const AWS_CERTIFICATION_OPTIONS = [
+  'SAA-C03',
+  'CLF-C02',
+  'DVA-C02',
+  'SOA-C02',
+  'SAP-C02',
+  'DOP-C02',
+  'SCS-C02',
+  'ANS-C01',
+  'MLS-C01',
+  'DEA-C01',
+  'AIF-C01',
+] as const;
+
+function normalizeTargetCertification(value?: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === '정하지 않음') return null;
+  return AWS_CERTIFICATION_OPTIONS.includes(
+    trimmed as (typeof AWS_CERTIFICATION_OPTIONS)[number],
+  )
+    ? trimmed
+    : null;
+}
 
 @Injectable()
 export class AuthService {
@@ -167,7 +195,7 @@ export class AuthService {
     // 3. 같은 이메일로 너무 자주 인증코드를 요청하지 못하게 막는다.
     const existingVerification = await this.emailVerificationRepository.findOne(
       {
-        where: { email },
+        where: { email, purpose: SIGNUP_EMAIL_PURPOSE },
       },
     );
     if (existingVerification?.lastSentAt) {
@@ -200,6 +228,7 @@ export class AuthService {
       await this.emailVerificationRepository.save(
         this.emailVerificationRepository.create({
           email,
+          purpose: SIGNUP_EMAIL_PURPOSE,
           codeHash,
           expiresAt,
           verifiedAt: null,
@@ -227,7 +256,7 @@ export class AuthService {
     const email = this.normalizeEmail(dto.email);
     const code = dto.code.trim();
     const record = await this.emailVerificationRepository.findOne({
-      where: { email },
+      where: { email, purpose: SIGNUP_EMAIL_PURPOSE },
     });
 
     if (!record) {
@@ -259,7 +288,7 @@ export class AuthService {
     }
 
     const verification = await this.emailVerificationRepository.findOne({
-      where: { email },
+      where: { email, purpose: SIGNUP_EMAIL_PURPOSE },
     });
     if (
       !verification ||
@@ -275,9 +304,13 @@ export class AuthService {
       email,
       name: signupDto.name,
       password: hashedPassword,
+      targetCertificationType: signupDto.targetCertificationType,
     });
 
-    await this.emailVerificationRepository.delete({ email });
+    await this.emailVerificationRepository.delete({
+      email,
+      purpose: SIGNUP_EMAIL_PURPOSE,
+    });
 
     // 3. 가입 직후 바로 로그인 상태가 되도록 토큰 응답을 반환한다.
     return this.createTokenResponse({
@@ -285,6 +318,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
+      targetCertificationType: user.targetCertificationType,
       solvedWorkbookIds: Array.isArray(user.solvedWorkbookIds)
         ? user.solvedWorkbookIds
         : [],
@@ -309,6 +343,7 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
+      targetCertificationType: user.targetCertificationType,
       solvedWorkbookIds: Array.isArray(user.solvedWorkbookIds)
         ? user.solvedWorkbookIds
         : [],
@@ -329,6 +364,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
+        targetCertificationType: user.targetCertificationType,
         solvedWorkbookIds: Array.isArray(user.solvedWorkbookIds)
           ? user.solvedWorkbookIds
           : [],
@@ -343,6 +379,202 @@ export class AuthService {
       workbookId.trim(),
     );
     return { solvedWorkbookIds };
+  }
+
+  async updateTargetCertification(
+    userId: number,
+    dto: UpdateTargetCertificationDto,
+  ) {
+    // 1. 목표 자격증은 허용된 AWS 자격증 값 또는 null로 저장한다.
+    const targetCertificationType = normalizeTargetCertification(
+      dto.targetCertificationType,
+    );
+    const user = await this.usersService.updateTargetCertification(
+      userId,
+      targetCertificationType,
+    );
+    if (!user) {
+      throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
+    }
+
+    // 2. 프론트가 localStorage를 갱신할 수 있도록 최신 사용자 정보를 반환한다.
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        targetCertificationType: user.targetCertificationType,
+        solvedWorkbookIds: Array.isArray(user.solvedWorkbookIds)
+          ? user.solvedWorkbookIds
+          : [],
+      },
+    };
+  }
+
+  async changePassword(userId: number, dto: ChangePasswordDto) {
+    // 1. 현재 비밀번호 검증을 위해 password까지 포함해서 사용자를 조회한다.
+    const user = await this.usersService.findByIdWithPassword(userId);
+    if (!user) {
+      throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
+    }
+
+    // 2. 현재 비밀번호가 맞는 경우에만 새 비밀번호를 저장한다.
+    const matched = await compare(dto.currentPassword, user.password);
+    if (!matched) {
+      throw new UnauthorizedException('현재 비밀번호가 올바르지 않습니다.');
+    }
+
+    const hashedPassword = await hash(dto.newPassword, 10);
+    await this.usersService.updatePassword(userId, hashedPassword);
+    return { changed: true };
+  }
+
+  async sendPasswordResetCode(dto: SendEmailCodeDto, clientIp: string) {
+    // 1. 비밀번호 찾기는 가입된 이메일에 대해서만 인증코드를 발송한다.
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.usersService.findByEmail(email);
+    if (!user) {
+      throw new UnauthorizedException('가입된 이메일을 찾을 수 없습니다.');
+    }
+
+    // 2. IP 기준 발송량을 회원가입 인증과 동일하게 제한한다.
+    const ip = (clientIp || '0.0.0.0').slice(0, 128);
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const sendsLastHour = await this.emailCodeSendLogRepository.count({
+      where: { ip, createdAt: MoreThan(hourAgo) },
+    });
+    if (sendsLastHour >= IP_SEND_MAX_PER_HOUR) {
+      throw new HttpException(
+        '같은 네트워크에서 인증메일 요청이 너무 많습니다. 1시간 후 다시 시도해 주세요.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const dayStart = this.kstStartOfDay();
+    const sendsTodayKst = await this.emailCodeSendLogRepository.count({
+      where: { ip, createdAt: MoreThanOrEqual(dayStart) },
+    });
+    if (sendsTodayKst >= IP_SEND_MAX_PER_KST_DAY) {
+      throw new HttpException(
+        '오늘 이 네트워크에서 보낼 수 있는 인증메일 횟수를 초과했습니다. 내일 다시 시도해 주세요.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    // 3. 같은 이메일 재발송 쿨다운을 확인한다.
+    const existingVerification = await this.emailVerificationRepository.findOne(
+      {
+        where: { email, purpose: PASSWORD_RESET_EMAIL_PURPOSE },
+      },
+    );
+    if (existingVerification?.lastSentAt) {
+      const elapsed = Date.now() - existingVerification.lastSentAt.getTime();
+      if (elapsed < EMAIL_RESEND_COOLDOWN_MS) {
+        const waitSec = Math.ceil((EMAIL_RESEND_COOLDOWN_MS - elapsed) / 1000);
+        throw new HttpException(
+          `같은 이메일로는 ${Math.round(EMAIL_RESEND_COOLDOWN_MS / 1000)}초에 한 번만 인증메일을 보낼 수 있습니다. 약 ${waitSec}초 후 다시 시도해 주세요.`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
+
+    // 4. 비밀번호 재설정용 인증코드를 발송하고 purpose를 분리해서 저장한다.
+    const code = this.createCode();
+    const codeHash = await hash(code, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const sent = await this.sendVerificationEmail(email, code);
+    const isProd = this.configService.get<string>('NODE_ENV') === 'production';
+    const sentAt = new Date();
+
+    if (existingVerification) {
+      existingVerification.codeHash = codeHash;
+      existingVerification.expiresAt = expiresAt;
+      existingVerification.verifiedAt = null;
+      existingVerification.lastSentAt = sentAt;
+      await this.emailVerificationRepository.save(existingVerification);
+    } else {
+      await this.emailVerificationRepository.save(
+        this.emailVerificationRepository.create({
+          email,
+          purpose: PASSWORD_RESET_EMAIL_PURPOSE,
+          codeHash,
+          expiresAt,
+          verifiedAt: null,
+          lastSentAt: sentAt,
+        }),
+      );
+    }
+
+    await this.emailCodeSendLogRepository.save(
+      this.emailCodeSendLogRepository.create({ ip }),
+    );
+
+    return {
+      message: sent
+        ? '비밀번호 재설정 인증코드를 이메일로 발송했습니다.'
+        : 'SMTP 설정이 없어 개발용 인증코드를 발급했습니다.',
+      expiresInSeconds: 600,
+      devCode: sent || isProd ? undefined : code,
+    };
+  }
+
+  async verifyPasswordResetCode(dto: VerifyEmailCodeDto) {
+    // 1. 가입된 이메일의 비밀번호 재설정 인증 요청만 검증한다.
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.usersService.findByEmail(email);
+    if (!user) {
+      throw new UnauthorizedException('가입된 이메일을 찾을 수 없습니다.');
+    }
+
+    const record = await this.emailVerificationRepository.findOne({
+      where: { email, purpose: PASSWORD_RESET_EMAIL_PURPOSE },
+    });
+    if (!record) {
+      throw new UnauthorizedException('인증요청 이력이 없습니다.');
+    }
+    if (record.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException('인증코드가 만료되었습니다.');
+    }
+
+    // 2. 인증코드가 맞으면 재설정 가능 상태로 표시한다.
+    const matched = await compare(dto.code.trim(), record.codeHash);
+    if (!matched) {
+      throw new UnauthorizedException('인증코드가 올바르지 않습니다.');
+    }
+
+    record.verifiedAt = new Date();
+    await this.emailVerificationRepository.save(record);
+    return { verified: true };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    // 1. 비밀번호 재설정은 가입된 이메일과 password_reset 인증 완료 기록이 모두 필요하다.
+    const email = this.normalizeEmail(dto.email);
+    const user = await this.usersService.findByEmail(email);
+    if (!user) {
+      throw new UnauthorizedException('가입된 이메일을 찾을 수 없습니다.');
+    }
+
+    const verification = await this.emailVerificationRepository.findOne({
+      where: { email, purpose: PASSWORD_RESET_EMAIL_PURPOSE },
+    });
+    if (
+      !verification ||
+      !verification.verifiedAt ||
+      verification.expiresAt.getTime() < Date.now()
+    ) {
+      throw new UnauthorizedException('이메일 인증을 먼저 완료해주세요.');
+    }
+
+    // 2. 새 비밀번호를 저장하고 사용한 인증 기록은 제거한다.
+    const hashedPassword = await hash(dto.newPassword, 10);
+    await this.usersService.updatePassword(user.id, hashedPassword);
+    await this.emailVerificationRepository.delete({
+      email,
+      purpose: PASSWORD_RESET_EMAIL_PURPOSE,
+    });
+    return { reset: true };
   }
 
   async recordWorkbookAttempt(
@@ -371,8 +603,37 @@ export class AuthService {
   }
 
   async getRecommendedQuestions(userId: number, limit?: number) {
-    // 1. 사용자의 최근 풀이 기록을 기준으로 유사 약점 문제를 추천한다.
-    return this.analyticsService.getRecommendedQuestions(userId, limit);
+    // 1. 목표 자격증이 있으면 해당 자격증 안에서만 유사 약점 문제를 추천한다.
+    const user = await this.usersService.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
+    }
+    return this.analyticsService.getRecommendedQuestions(
+      userId,
+      limit,
+      user.targetCertificationType,
+    );
+  }
+
+  async getDailyQuestions(userId: number, limit?: number) {
+    // 1. 오늘의 문제는 목표 자격증이 있어야 제공한다.
+    const user = await this.usersService.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
+    }
+    if (!user.targetCertificationType) {
+      throw new HttpException(
+        '오늘의 문제를 받으려면 목표 자격증을 먼저 선택해주세요.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // 2. 목표 자격증과 KST 날짜 기준으로 하루 동안 고정된 랜덤 문제를 반환한다.
+    return this.analyticsService.getDailyQuestions(
+      userId,
+      user.targetCertificationType,
+      limit,
+    );
   }
 
   async getWeaknessComment(userId: number) {
@@ -390,6 +651,7 @@ export class AuthService {
     email: string;
     name: string;
     role: 'user' | 'admin';
+    targetCertificationType?: string | null;
     solvedWorkbookIds: string[];
   }) {
     // 1. JWT에는 인증과 권한 판단에 필요한 최소 사용자 정보만 넣는다.
@@ -409,6 +671,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
+        targetCertificationType: user.targetCertificationType ?? null,
         solvedWorkbookIds: user.solvedWorkbookIds,
       },
     };

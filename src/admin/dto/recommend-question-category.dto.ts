@@ -9,6 +9,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+// 관리자 화면에서 선택 가능한 문제 카테고리 옵션을 검증하는 DTO입니다.
 export class QuestionCategoryOptionDto {
   @IsString()
   @IsNotEmpty()
@@ -26,6 +27,7 @@ export class QuestionCategoryOptionDto {
   keywords?: string[];
 }
 
+// 작성 중인 문항을 기존 임베딩과 비교해 카테고리 추천을 요청할 때 검증하는 DTO입니다.
 export class RecommendQuestionCategoryDto {
   @IsString()
   @IsNotEmpty()

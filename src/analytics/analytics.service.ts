@@ -25,6 +25,7 @@ type RecommendedQuestion = {
   id: string;
   questionId: string;
   questionNumber: number;
+  certificationType?: string | null;
   questionDescription: string;
   choices: string[];
   answer: string;
@@ -146,11 +147,13 @@ export class AnalyticsService {
     similarity: number,
     recommendReason: string,
     questionNumber: number,
+    certificationType: string | null = null,
   ): RecommendedQuestion {
     return {
       id: item._id.toString(),
       questionId: item.questionId.toString(),
       questionNumber,
+      certificationType,
       questionDescription: item.questionDescription,
       choices: item.choices,
       answer: item.answer,
@@ -255,6 +258,7 @@ export class AnalyticsService {
     totalCount: number;
     questionAttempts?: Array<{
       questionId: string;
+      certificationType?: string | null;
       questionCategory: string;
       difficulty: string;
       selectedAnswer?: string | null;
@@ -274,6 +278,7 @@ export class AnalyticsService {
       this.questionAttemptRepository.create({
         userId: input.userId,
         workbookId: workbookId || null,
+        certificationType: item.certificationType?.trim() || null,
         questionId: item.questionId.trim(),
         questionCategory: item.questionCategory.trim(),
         difficulty: item.difficulty.trim(),
@@ -311,9 +316,15 @@ export class AnalyticsService {
     return { saved: true };
   }
 
-  private async getPublishedQuestionItems() {
+  private async getPublishedQuestionItems(certificationType?: string | null) {
+    const questionFilter: { status: { $ne: 'draft' }; certificationType?: string } =
+      { status: { $ne: 'draft' } };
+    if (certificationType) {
+      questionFilter.certificationType = certificationType;
+    }
+
     const publishedQuestions = await this.questionModel
-      .find({ status: { $ne: 'draft' } })
+      .find(questionFilter)
       .select({ _id: 1 })
       .lean()
       .exec();
@@ -332,6 +343,15 @@ export class AnalyticsService {
     if (items.length === 0) return [];
 
     const itemIds = items.map((item) => item._id.toString());
+    const workbookIds = [...new Set(items.map((item) => item.questionId.toString()))];
+    const workbookRows = await this.questionModel
+      .find({ _id: { $in: workbookIds } })
+      .select({ _id: 1, certificationType: 1 })
+      .lean()
+      .exec();
+    const certificationMap = new Map(
+      workbookRows.map((row) => [String(row._id), row.certificationType]),
+    );
     const existingRows = await this.questionEmbeddingRepository.find({
       where: { questionId: In(itemIds) },
     });
@@ -355,6 +375,7 @@ export class AnalyticsService {
       const row = existing ?? this.questionEmbeddingRepository.create();
       row.questionId = questionId;
       row.workbookId = item.questionId.toString();
+      row.certificationType = certificationMap.get(item.questionId.toString()) ?? null;
       row.questionCategory = item.questionCategory;
       row.difficulty = item.difficulty;
       row.contentHash = contentHash;
@@ -365,7 +386,11 @@ export class AnalyticsService {
     return savedRows;
   }
 
-  async getRecommendedQuestions(userId: number, limit = 20) {
+  async getRecommendedQuestions(
+    userId: number,
+    limit = 20,
+    targetCertificationType?: string | null,
+  ) {
     const safeLimit = Math.min(Math.max(limit, 1), 50);
 
     // 1. 최근 풀이 기록을 가져온다. 전체 누적이 아니라 현재 약점만 반영하기 위해 최근 50개만 본다.
@@ -377,7 +402,9 @@ export class AnalyticsService {
     if (!attempts.some((attempt) => !attempt.isCorrect)) return [];
 
     // 2. 추천 후보가 될 published 문항과 embedding을 준비한다.
-    const publishedItems = await this.getPublishedQuestionItems();
+    const publishedItems = await this.getPublishedQuestionItems(
+      targetCertificationType,
+    );
     const publishedEmbeddings =
       await this.ensureQuestionEmbeddings(publishedItems);
 
@@ -458,6 +485,7 @@ export class AnalyticsService {
       item: QuestionItemDocument;
       score: number;
       baseSimilarity: number;
+      certificationType: string | null;
     }> = [];
 
     for (const row of publishedEmbeddings) {
@@ -473,7 +501,12 @@ export class AnalyticsService {
       );
       const correctPenalty = recentlyCorrectIds.has(row.questionId) ? 0.25 : 0;
       const score = baseSimilarity - attemptedPenalty - correctPenalty;
-      scored.push({ item, score, baseSimilarity });
+      scored.push({
+        item,
+        score,
+        baseSimilarity,
+        certificationType: row.certificationType,
+      });
     }
 
     // 7. 점수가 높은 순서대로 제한하고, 화면에서 바로 쓸 수 있는 응답 형태로 바꾼다.
@@ -495,8 +528,45 @@ export class AnalyticsService {
         row.baseSimilarity,
         recommendReason,
         index + 1,
+        row.certificationType,
       );
     });
+  }
+
+  async getDailyQuestions(
+    userId: number,
+    targetCertificationType: string,
+    limit = 5,
+  ) {
+    const safeLimit = Math.min(Math.max(limit, 1), 20);
+
+    // 1. 오늘의 문제는 사용자의 목표 자격증 안에서만 제공한다.
+    const publishedItems = await this.getPublishedQuestionItems(
+      targetCertificationType,
+    );
+    if (publishedItems.length === 0) return [];
+
+    // 2. KST 날짜, 사용자, 목표 자격증을 seed로 사용해 하루 동안 같은 랜덤 순서를 유지한다.
+    const today = this.dateString();
+    const seededItems = publishedItems
+      .map((item) => {
+        const seed = `${today}:${userId}:${targetCertificationType}:${item._id.toString()}`;
+        const score = parseInt(this.contentHash(seed).slice(0, 12), 16);
+        return { item, score };
+      })
+      .sort((a, b) => a.score - b.score)
+      .slice(0, safeLimit);
+
+    // 3. 퀴즈 화면에서 바로 풀 수 있는 형태로 반환한다.
+    return seededItems.map((row, index) =>
+      this.toRecommendedQuestion(
+        row.item,
+        0,
+        `${targetCertificationType} 오늘의 랜덤 문제입니다.`,
+        index + 1,
+        targetCertificationType,
+      ),
+    );
   }
 
   async getWeaknessComment(userId: number) {

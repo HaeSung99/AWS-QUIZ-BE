@@ -2,17 +2,22 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
 
 @Entity('email_verifications')
+@Index(['email', 'purpose'], { unique: true })
 export class EmailVerification {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ unique: true, length: 255 })
+  @Column({ length: 255 })
   email: string;
+
+  @Column({ type: 'varchar', length: 30, default: 'signup' })
+  purpose: 'signup' | 'password_reset';
 
   @Column({ length: 255 })
   codeHash: string;

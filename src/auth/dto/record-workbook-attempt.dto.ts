@@ -13,6 +13,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+// 개별 문항 풀이 결과를 약점 분석용으로 저장할 때 검증하는 DTO입니다.
 export class RecordQuestionAttemptDto {
   @IsString()
   @IsNotEmpty()
@@ -23,6 +24,11 @@ export class RecordQuestionAttemptDto {
   @IsNotEmpty()
   @MaxLength(100)
   questionCategory: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  certificationType?: string | null;
 
   @IsString()
   @IsNotEmpty()
@@ -43,6 +49,7 @@ export class RecordQuestionAttemptDto {
   isCorrect: boolean;
 }
 
+// 한 번의 퀴즈 제출 결과와 문항별 풀이 기록을 함께 검증하는 DTO입니다.
 export class RecordWorkbookAttemptDto {
   @IsOptional()
   @IsString()

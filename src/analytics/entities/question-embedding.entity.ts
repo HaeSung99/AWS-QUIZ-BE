@@ -10,6 +10,7 @@ import {
 @Entity('question_embeddings')
 @Index(['questionId'], { unique: true })
 @Index(['questionCategory'])
+@Index(['certificationType'])
 export class QuestionEmbedding {
   @PrimaryGeneratedColumn()
   id: number;
@@ -19,6 +20,9 @@ export class QuestionEmbedding {
 
   @Column({ type: 'varchar', length: 64 })
   workbookId: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  certificationType: string | null;
 
   @Column({ type: 'varchar', length: 100 })
   questionCategory: string;
