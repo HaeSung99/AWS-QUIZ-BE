@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { QuestionEmbedding } from '../analytics/entities/question-embedding.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { PublicController } from './public.controller';
@@ -14,6 +16,7 @@ import {
 @Module({
   imports: [
     AnalyticsModule,
+    TypeOrmModule.forFeature([QuestionEmbedding]),
     MongooseModule.forFeature([
       { name: Notice.name, schema: NoticeSchema },
       { name: Question.name, schema: QuestionSchema },

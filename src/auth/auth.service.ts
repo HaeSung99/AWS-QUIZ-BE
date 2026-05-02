@@ -1,4 +1,9 @@
-import { HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -17,7 +22,8 @@ import { VerifyEmailCodeDto } from './dto/verify-email-code.dto';
 
 const EMAIL_RESEND_COOLDOWN_MS = 120_000;
 const IP_SEND_MAX_PER_HOUR = 10;
-const IP_SEND_MAX_PER_UTC_DAY = 20;
+const IP_SEND_MAX_PER_KST_DAY = 20;
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -36,9 +42,12 @@ export class AuthService {
     return email.toLowerCase().trim();
   }
 
-  /** UTC 자정(일일 IP 상한 기준) */
-  private utcStartOfDay(now = new Date()) {
-    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  /** KST 자정(일일 IP 상한 기준) */
+  private kstStartOfDay(now = new Date()) {
+    const kstDateText = new Date(now.getTime() + KST_OFFSET_MS)
+      .toISOString()
+      .slice(0, 10);
+    return new Date(`${kstDateText}T00:00:00.000+09:00`);
   }
 
   private createCode() {
@@ -124,6 +133,7 @@ export class AuthService {
   }
 
   async sendEmailCode(dto: SendEmailCodeDto, clientIp: string) {
+    // 1. IP 기준 발송량을 먼저 제한해서 SMTP 남용을 막는다.
     const ip = (clientIp || '0.0.0.0').slice(0, 128);
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const sendsLastHour = await this.emailCodeSendLogRepository.count({
@@ -136,26 +146,30 @@ export class AuthService {
       );
     }
 
-    const dayStart = this.utcStartOfDay();
-    const sendsTodayUtc = await this.emailCodeSendLogRepository.count({
+    const dayStart = this.kstStartOfDay();
+    const sendsTodayKst = await this.emailCodeSendLogRepository.count({
       where: { ip, createdAt: MoreThanOrEqual(dayStart) },
     });
-    if (sendsTodayUtc >= IP_SEND_MAX_PER_UTC_DAY) {
+    if (sendsTodayKst >= IP_SEND_MAX_PER_KST_DAY) {
       throw new HttpException(
         '오늘 이 네트워크에서 보낼 수 있는 인증메일 횟수를 초과했습니다. 내일 다시 시도해 주세요.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
 
+    // 2. 이미 가입된 이메일인지 확인한다.
     const email = this.normalizeEmail(dto.email);
     const existingUser = await this.usersService.findByEmail(email);
     if (existingUser) {
       throw new UnauthorizedException('이미 가입된 이메일입니다.');
     }
 
-    const existingVerification = await this.emailVerificationRepository.findOne({
-      where: { email },
-    });
+    // 3. 같은 이메일로 너무 자주 인증코드를 요청하지 못하게 막는다.
+    const existingVerification = await this.emailVerificationRepository.findOne(
+      {
+        where: { email },
+      },
+    );
     if (existingVerification?.lastSentAt) {
       const elapsed = Date.now() - existingVerification.lastSentAt.getTime();
       if (elapsed < EMAIL_RESEND_COOLDOWN_MS) {
@@ -167,6 +181,7 @@ export class AuthService {
       }
     }
 
+    // 4. 인증코드를 만들고, 메일 발송을 시도한다. SMTP가 없으면 개발 환경에서 devCode를 돌려준다.
     const code = this.createCode();
     const codeHash = await hash(code, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -193,7 +208,10 @@ export class AuthService {
       );
     }
 
-    await this.emailCodeSendLogRepository.save(this.emailCodeSendLogRepository.create({ ip }));
+    // 5. IP 발송 로그를 남긴 뒤 클라이언트가 타이머를 표시할 수 있는 응답을 반환한다.
+    await this.emailCodeSendLogRepository.save(
+      this.emailCodeSendLogRepository.create({ ip }),
+    );
 
     return {
       message: sent
@@ -205,6 +223,7 @@ export class AuthService {
   }
 
   async verifyEmailCode(dto: VerifyEmailCodeDto) {
+    // 1. 인증 요청 기록을 찾고, 만료 여부를 확인한다.
     const email = this.normalizeEmail(dto.email);
     const code = dto.code.trim();
     const record = await this.emailVerificationRepository.findOne({
@@ -219,6 +238,7 @@ export class AuthService {
       throw new UnauthorizedException('인증코드가 만료되었습니다.');
     }
 
+    // 2. 입력 코드와 저장된 해시가 맞으면 인증 완료 시각을 저장한다.
     const matched = await compare(code, record.codeHash);
     if (!matched) {
       throw new UnauthorizedException('인증코드가 올바르지 않습니다.');
@@ -231,6 +251,7 @@ export class AuthService {
   }
 
   async signup(signupDto: SignupDto) {
+    // 1. 이메일 중복과 인증 완료 여부를 확인한다.
     const email = this.normalizeEmail(signupDto.email);
     const existingUser = await this.usersService.findByEmail(email);
     if (existingUser) {
@@ -248,6 +269,7 @@ export class AuthService {
       throw new UnauthorizedException('이메일 인증을 먼저 완료해주세요.');
     }
 
+    // 2. 비밀번호를 해시해서 사용자를 만들고, 사용한 인증 기록은 정리한다.
     const hashedPassword = await hash(signupDto.password, 10);
     const user = await this.usersService.createUser({
       email,
@@ -257,6 +279,7 @@ export class AuthService {
 
     await this.emailVerificationRepository.delete({ email });
 
+    // 3. 가입 직후 바로 로그인 상태가 되도록 토큰 응답을 반환한다.
     return this.createTokenResponse({
       id: user.id,
       email: user.email,
@@ -269,6 +292,7 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto) {
+    // 1. 이메일로 사용자를 찾고 비밀번호를 검증한다.
     const user = await this.usersService.findByEmail(loginDto.email);
     if (!user) {
       throw new UnauthorizedException('이메일이 올바르지 않습니다.');
@@ -279,6 +303,7 @@ export class AuthService {
       throw new UnauthorizedException('비밀번호가 올바르지 않습니다.');
     }
 
+    // 2. 인증에 성공하면 프론트가 저장할 토큰과 사용자 정보를 반환한다.
     return this.createTokenResponse({
       id: user.id,
       email: user.email,
@@ -291,11 +316,13 @@ export class AuthService {
   }
 
   async getProfile(userId: number) {
+    // 1. JWT의 userId로 현재 사용자 정보를 다시 조회한다.
     const user = await this.usersService.findById(userId);
     if (!user) {
       throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
     }
 
+    // 2. 프론트가 세션 동기화에 필요한 사용자 정보만 반환한다.
     return {
       user: {
         id: user.id,
@@ -310,6 +337,7 @@ export class AuthService {
   }
 
   async markWorkbookSolved(userId: number, workbookId: string) {
+    // 1. 사용자가 완료한 문제집 목록에 현재 문제집을 추가하고 최신 목록을 반환한다.
     const solvedWorkbookIds = await this.usersService.addSolvedWorkbook(
       userId,
       workbookId.trim(),
@@ -322,15 +350,39 @@ export class AuthService {
     role: 'user' | 'admin',
     dto: RecordWorkbookAttemptDto,
   ) {
+    // 1. admin의 테스트 제출은 이용자 통계와 약점 분석 데이터에서 제외한다.
     if (role === 'admin') {
       return { saved: true, statsExcluded: true as const };
     }
+
+    // 2. 일반 사용자의 제출만 analytics 서비스에 위임해 문제집 정답률과 문항별 기록을 저장한다.
     return this.analyticsService.recordWorkbookAttempt({
       userId,
       workbookId: dto.workbookId,
       correctCount: dto.correctCount,
       totalCount: dto.totalCount,
+      questionAttempts: dto.questionAttempts,
     });
+  }
+
+  async getPersonalWeakCategories(userId: number) {
+    // 1. 홈 화면의 "내가 자주 틀리는 유형" 데이터를 analytics 서비스에서 가져온다.
+    return this.analyticsService.getPersonalWeakCategories(userId);
+  }
+
+  async getRecommendedQuestions(userId: number, limit?: number) {
+    // 1. 사용자의 최근 풀이 기록을 기준으로 유사 약점 문제를 추천한다.
+    return this.analyticsService.getRecommendedQuestions(userId, limit);
+  }
+
+  async getWeaknessComment(userId: number) {
+    // 1. 사용자의 약점 요약과 일일 AI 코멘트 캐시를 가져온다.
+    return this.analyticsService.getWeaknessComment(userId);
+  }
+
+  async getGlobalWeakCategories() {
+    // 1. 전체 이용자가 자주 틀리는 유형을 홈 화면에 제공한다.
+    return this.analyticsService.getGlobalWeakCategories();
   }
 
   createTokenResponse(user: {
@@ -340,6 +392,7 @@ export class AuthService {
     role: 'user' | 'admin';
     solvedWorkbookIds: string[];
   }) {
+    // 1. JWT에는 인증과 권한 판단에 필요한 최소 사용자 정보만 넣는다.
     const payload = {
       sub: user.id,
       email: user.email,
@@ -348,6 +401,7 @@ export class AuthService {
     };
     const accessToken = this.jwtService.sign(payload);
 
+    // 2. 프론트가 localStorage에 저장할 토큰과 사용자 정보를 함께 반환한다.
     return {
       accessToken,
       user: {
