@@ -36,7 +36,13 @@ export class AdminController {
     return this.analyticsService.getAdminOverview();
   }
 
-  // 문항 카테고리 추천: 관리자 테스트용으로 Ollama가 표준 카테고리 중 하나를 추천한다.
+  // 문항 카테고리 목록: 현재 저장된 문항에서 실제 사용 중인 카테고리를 가져온다.
+  @Get('question-categories')
+  getUsedQuestionCategories() {
+    return this.adminService.getUsedQuestionCategories();
+  }
+
+  // 문항 카테고리 추천: 작성 중인 문항을 기존 문제 임베딩과 비교해 현재 사용 중인 카테고리 중 Top 3를 추천한다.
   @Post('question-categories/recommend')
   recommendQuestionCategory(@Body() dto: RecommendQuestionCategoryDto) {
     return this.adminService.recommendQuestionCategory(dto);

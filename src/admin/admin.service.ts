@@ -164,7 +164,7 @@ export class AdminService {
   }
 
   async recommendQuestionCategory(dto: RecommendQuestionCategoryDto) {
-    // 1. 관리자 화면에서 작성 중인 문제 설명과 선택 가능한 표준 카테고리를 검증한다.
+    // 1. 관리자 화면에서 작성 중인 문제 설명과 현재 사용 중인 카테고리 후보를 검증한다.
     const questionDescription = dto.questionDescription.trim();
     if (!questionDescription) {
       throw new BadRequestException('문제 설명을 입력해주세요.');
@@ -174,16 +174,20 @@ export class AdminService {
       .map((category) => category.value.trim())
       .filter((category) => category.length > 0);
     if (allowedCategories.length === 0) {
-      throw new BadRequestException('카테고리 매핑표가 비어있습니다.');
+      throw new BadRequestException(
+        '추천할 기존 카테고리가 없습니다. 먼저 카테고리를 직접 작성해 저장해주세요.',
+      );
     }
     const allowedCategorySet = new Set(allowedCategories);
 
     // 2. 작성 중인 문제를 임베딩해서 기존 문제 임베딩과 비교할 기준 벡터로 사용한다.
-    const draftEmbedding = await this.createEmbedding(
-      this.buildDraftQuestionText({ ...dto, questionDescription }),
-    );
+    const draftQuestionText = this.buildDraftQuestionText({
+      ...dto,
+      questionDescription,
+    });
+    const draftEmbedding = await this.createEmbedding(draftQuestionText);
 
-    // 3. 기존 문제 중 표준 카테고리에 속한 임베딩만 후보로 삼고, 유사도가 높은 문제 30개를 추린다.
+    // 3. 기존 문제에서 실제 사용 중인 카테고리만 추천 후보로 삼는다.
     const existingEmbeddings = await this.questionEmbeddingRepository.find();
     const similarRows = existingEmbeddings
       .filter((row) => allowedCategorySet.has(row.questionCategory))
@@ -238,6 +242,26 @@ export class AdminService {
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
+  }
+
+  async getUsedQuestionCategories() {
+    // 1. 실제 저장된 문항에서 사용 중인 카테고리만 모아 관리자 입력 후보로 제공한다.
+    const categories = await this.questionItemModel
+      .distinct<string>('questionCategory', {
+        questionCategory: { $exists: true, $ne: '' },
+      })
+      .exec();
+
+    // 2. 공백과 중복을 정리해서 화면에서 바로 select/datalist 후보로 쓸 수 있게 반환한다.
+    return [
+      ...new Set(
+        categories
+          .filter((category): category is string => typeof category === 'string')
+          .map((category) => category.trim()),
+      ),
+    ]
+      .filter((category) => category.length > 0)
+      .sort((a, b) => a.localeCompare(b, 'ko'));
   }
 
   async createNotice(dto: CreateNoticeDto) {
