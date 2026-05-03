@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
 import { In, Repository } from 'typeorm';
 import {
@@ -386,6 +386,23 @@ export class AnalyticsService {
     return savedRows;
   }
 
+  /**
+   * 게시된 문제집의 모든 문항에 대해 임베딩을 생성하거나 본문이 바뀐 경우 갱신합니다.
+   * draft 상태에서는 호출하지 않는 것을 권장합니다.
+   */
+  async syncQuestionEmbeddingsForWorkbook(workbookMongoId: string): Promise<void> {
+    const items = await this.questionItemModel
+      .find({ questionId: new Types.ObjectId(workbookMongoId) })
+      .sort({ questionNumber: 1 })
+      .exec();
+    await this.ensureQuestionEmbeddings(items);
+  }
+
+  /** 게시 상태에서 특정 문항만 저장했을 때 해당 문항 임베딩만 동기화합니다. */
+  async syncQuestionEmbeddingForItem(item: QuestionItemDocument): Promise<void> {
+    await this.ensureQuestionEmbeddings([item]);
+  }
+
   async getRecommendedQuestions(
     userId: number,
     limit = 20,
@@ -593,7 +610,18 @@ export class AnalyticsService {
       0,
     );
 
-    // 2. 최근 기록을 유형별 오답/정답 요약으로 바꾼다. 정답 수는 개선 중인 영역을 말하기 위한 신호다.
+    // 2. AI 약점 코멘트와 추천 연동은 최근 N문제 기록이 채워진 뒤에만 수행한다.
+    if (attemptCount < WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS) {
+      return {
+        comment: '',
+        attemptCount,
+        requiredAttemptCount: WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS,
+        remainingAttemptCount,
+        ready: false,
+      };
+    }
+
+    // 3. 최근 기록을 유형별 오답/정답 요약으로 바꾼다. 정답 수는 개선 중인 영역을 말하기 위한 신호다.
     const summaryMap = new Map<
       string,
       { wrong: number; correct: number; latestAt: string | null }
@@ -619,10 +647,10 @@ export class AnalyticsService {
       .sort((a, b) => b.wrong - a.wrong || b.correct - a.correct)
       .slice(0, 6);
 
-    // 3. 실제 추천 결과의 공통 특징도 같이 넣어 코멘트가 추천 문제와 따로 놀지 않게 한다.
+    // 4. 실제 추천 결과의 공통 특징도 같이 넣어 코멘트가 추천 문제와 따로 놀지 않게 한다.
     const recommendations = await this.getRecommendedQuestions(userId, 5);
 
-    // 4. 같은 날 이미 생성한 코멘트가 있으면 저장된 값을 반환해서 하루 1회만 OpenAI 토큰을 쓴다.
+    // 5. 같은 날 이미 생성한 코멘트가 있으면 저장된 값을 반환해서 하루 1회만 OpenAI 토큰을 쓴다.
     const commentDate = this.dateString();
     const recommendationSummary = recommendations.map((item) => ({
       category: item.questionCategory,
@@ -648,7 +676,7 @@ export class AnalyticsService {
       };
     }
 
-    // 5. 민감한 사용자 정보 없이 학습 패턴 요약만 OpenAI에 보낸다.
+    // 6. 민감한 사용자 정보 없이 학습 패턴 요약만 OpenAI에 보낸다.
     const prompt = [
       'AWS 자격증 퀴즈 학습자의 최근 풀이 기록을 보고 2문장 이내 한국어 코멘트를 작성하세요.',
       '단정적인 표현보다 학습 조언처럼 말하세요.',
@@ -657,7 +685,7 @@ export class AnalyticsService {
       `추천 문제 공통 특징: ${JSON.stringify(recommendationSummary)}`,
     ].join('\n');
 
-    // 6. OpenAI 코멘트 생성 결과를 하루 캐시에 저장하고 홈 화면용 응답으로 반환한다.
+    // 7. OpenAI 코멘트 생성 결과를 하루 캐시에 저장하고 홈 화면용 응답으로 반환한다.
     const response = await this.getOpenAIClient().chat.completions.create({
       model: this.commentModel(),
       messages: [

@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
 import { Repository } from 'typeorm';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { QuestionEmbedding } from '../analytics/entities/question-embedding.entity';
 import { CreateNoticeDto } from './dto/create-notice.dto';
 import { CreateQuestionItemDto } from './dto/create-question-item.dto';
@@ -31,6 +32,7 @@ export class AdminService {
 
   constructor(
     private readonly configService: ConfigService,
+    private readonly analyticsService: AnalyticsService,
     @InjectRepository(QuestionEmbedding)
     private readonly questionEmbeddingRepository: Repository<QuestionEmbedding>,
     @InjectModel(Notice.name)
@@ -360,6 +362,12 @@ export class AdminService {
 
     // 3. 저장 후 관리자 화면 응답 형태로 반환한다.
     const saved = await question.save();
+
+    // 4. 게시 상태면 해당 문제집 문항 전체 임베딩을 미리 만들어 두어 추천 시점 부하를 줄인다.
+    if (saved.status !== 'draft') {
+      await this.analyticsService.syncQuestionEmbeddingsForWorkbook(questionId);
+    }
+
     return this.toQuestionResponse(saved);
   }
 
@@ -406,6 +414,12 @@ export class AdminService {
       difficulty: dto.difficulty,
       questionCategory: dto.questionCategory,
     });
+
+    // 4. 이미 게시된 문제집이면 새 문항 임베딩을 바로 생성한다.
+    if (question.status !== 'draft') {
+      await this.analyticsService.syncQuestionEmbeddingForItem(created);
+    }
+
     return this.toQuestionItemResponse(created);
   }
 
@@ -528,6 +542,12 @@ export class AdminService {
 
     // 4. 저장 후 관리자 화면에서 쓰는 응답 형태로 반환한다.
     const saved = await item.save();
+
+    // 5. 게시된 문제집의 문항이면 수정 내용 반영을 위해 해당 문항 임베딩을 갱신한다.
+    if (question.status !== 'draft') {
+      await this.analyticsService.syncQuestionEmbeddingForItem(saved);
+    }
+
     return this.toQuestionItemResponse(saved);
   }
 
