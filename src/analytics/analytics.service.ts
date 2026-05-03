@@ -1,4 +1,8 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -36,7 +40,7 @@ type RecommendedQuestion = {
   recommendReason: string;
 };
 
-const WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS = 50;
+export const WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS = 50;
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 @Injectable()
@@ -416,6 +420,11 @@ export class AnalyticsService {
       order: { createdAt: 'DESC' },
       take: 50,
     });
+    if (attempts.length < WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS) {
+      throw new BadRequestException(
+        `약점 기반 유사 문제는 최근 ${WEAKNESS_ANALYSIS_REQUIRED_ATTEMPTS}문제 풀이 기록이 쌓인 뒤 제공됩니다.`,
+      );
+    }
     if (!attempts.some((attempt) => !attempt.isCorrect)) return [];
 
     // 2. 추천 후보가 될 published 문항과 embedding을 준비한다.
