@@ -30,7 +30,7 @@ export class AdminController {
     private readonly analyticsService: AnalyticsService,
   ) {}
 
-  // 관리자 대시보드 통계: 가입자, 방문자, 문제집 정답률 요약을 반환한다.
+  // 관리자 대시보드 통계: 가입자, 방문자, 문제집 정답률 통계를 반환한다.
   @Get('stats/overview')
   getStatsOverview() {
     return this.analyticsService.getAdminOverview();
