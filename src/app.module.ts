@@ -17,6 +17,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
       username: process.env.DB_USERNAME,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
+      // DB 시간대 설정
+      timezone: '+09:00',
       autoLoadEntities: true,
       synchronize: true, // 개발 환경에서만 true, 프로덕션 환경에서는 false
     }),

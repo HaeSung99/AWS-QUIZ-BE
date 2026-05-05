@@ -71,6 +71,42 @@ export class AnalyticsService {
     return new Date(date.getTime() + KST_OFFSET_MS).toISOString().slice(0, 10);
   }
 
+  /** YYYY-MM-DD 문자열에서 그레고리력으로 일수만큼 이전 날짜 */
+  private subtractCalendarDaysFromYmd(ymd: string, deltaDays: number): string {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() - deltaDays);
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  /**
+   * 일별 차트에 포함할 KST 달력 일수(days) 구간의 시작 시각.
+   * 오늘(KST) 포함이므로 시작일은 오늘에서 (days - 1)일 전 자정(KST).
+   */
+  private kstMidnightCalendarInclusiveRangeStart(days: number): Date {
+    const safeDays = Math.max(1, days);
+    const firstYmd = this.subtractCalendarDaysFromYmd(
+      this.dateString(),
+      safeDays - 1,
+    );
+    return new Date(`${firstYmd}T00:00:00+09:00`);
+  }
+
+  /** 당월 포함 최근 months개월 월별 집계용 최소 YYYY-MM (KST 달력) */
+  private kstMinYmRolling(months: number): string {
+    const [ys, ms] = this.dateString().split('-');
+    let y = Number(ys);
+    let m = Number(ms) - (months - 1);
+    while (m <= 0) {
+      m += 12;
+      y -= 1;
+    }
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
+
   private getOpenAIClient() {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     if (!apiKey) {
@@ -803,55 +839,41 @@ export class AnalyticsService {
   }
 
   private async buildDailyUserSignups(days = 30) {
+    const since = this.kstMidnightCalendarInclusiveRangeStart(days);
+    const dateExpr = "DATE_FORMAT(u.createdAt, '%Y-%m-%d')";
     const rows = await this.usersRepository
       .createQueryBuilder('u')
-      .select(
-        "DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')",
-        'date',
-      )
+      .select(dateExpr, 'date')
       .addSelect('COUNT(*)', 'count')
-      .where(
-        'DATE_ADD(u.createdAt, INTERVAL 9 HOUR) >= DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR), INTERVAL :days DAY)',
-        { days },
-      )
-      .groupBy(
-        "DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')",
-      )
-      .orderBy(
-        "DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m-%d')",
-        'ASC',
-      )
+      .where('u.createdAt >= :since', { since })
+      .groupBy(dateExpr)
+      .orderBy(dateExpr, 'ASC')
       .getRawMany<{ date: string; count: string }>();
 
     return rows.map((row) => ({ date: row.date, count: Number(row.count) }));
   }
 
   private async buildMonthlyUserSignups(months = 12) {
+    const minYm = this.kstMinYmRolling(months);
+    const monthExpr = "DATE_FORMAT(u.createdAt, '%Y-%m')";
     const rows = await this.usersRepository
       .createQueryBuilder('u')
-      .select(
-        "DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')",
-        'month',
-      )
+      .select(monthExpr, 'month')
       .addSelect('COUNT(*)', 'count')
-      .where(
-        'DATE_ADD(u.createdAt, INTERVAL 9 HOUR) >= DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR), INTERVAL :months MONTH)',
-        { months },
-      )
-      .groupBy("DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')")
-      .orderBy(
-        "DATE_FORMAT(DATE_ADD(u.createdAt, INTERVAL 9 HOUR), '%Y-%m')",
-        'ASC',
-      )
+      .where(`${monthExpr} >= :minYm`, { minYm })
+      .groupBy(monthExpr)
+      .orderBy(monthExpr, 'ASC')
       .getRawMany<{ month: string; count: string }>();
 
     return rows.map((row) => ({ month: row.month, count: Number(row.count) }));
   }
 
   private async buildDailyVisitors(days = 30) {
+    const since = this.kstMidnightCalendarInclusiveRangeStart(days);
+    const dateExpr = "DATE_FORMAT(v.createdAt, '%Y-%m-%d')";
     const rows = await this.visitLogRepository
       .createQueryBuilder('v')
-      .select('v.viewedOn', 'date')
+      .select(dateExpr, 'date')
       .addSelect('COUNT(*)', 'count')
       .addSelect(
         "SUM(CASE WHEN v.visitorType = 'human' THEN 1 ELSE 0 END)",
@@ -865,14 +887,9 @@ export class AnalyticsService {
         "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
         'unknown',
       )
-      .where(
-        'v.viewedOn >= DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)), INTERVAL :days DAY)',
-        {
-          days,
-        },
-      )
-      .groupBy('v.viewedOn')
-      .orderBy('v.viewedOn', 'ASC')
+      .where('v.createdAt >= :since', { since })
+      .groupBy(dateExpr)
+      .orderBy(dateExpr, 'ASC')
       .getRawMany<{
         date: string;
         count: string;
@@ -891,9 +908,11 @@ export class AnalyticsService {
   }
 
   private async buildMonthlyVisitors(months = 12) {
+    const minYm = this.kstMinYmRolling(months);
+    const monthExpr = "DATE_FORMAT(v.createdAt, '%Y-%m')";
     const rows = await this.visitLogRepository
       .createQueryBuilder('v')
-      .select("DATE_FORMAT(v.viewedOn, '%Y-%m')", 'month')
+      .select(monthExpr, 'month')
       .addSelect('COUNT(*)', 'count')
       .addSelect(
         "SUM(CASE WHEN v.visitorType = 'human' THEN 1 ELSE 0 END)",
@@ -907,12 +926,9 @@ export class AnalyticsService {
         "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
         'unknown',
       )
-      .where(
-        'v.viewedOn >= DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)), INTERVAL :months MONTH)',
-        { months },
-      )
-      .groupBy("DATE_FORMAT(v.viewedOn, '%Y-%m')")
-      .orderBy("DATE_FORMAT(v.viewedOn, '%Y-%m')", 'ASC')
+      .where(`${monthExpr} >= :minYm`, { minYm })
+      .groupBy(monthExpr)
+      .orderBy(monthExpr, 'ASC')
       .getRawMany<{
         month: string;
         count: string;
@@ -992,9 +1008,10 @@ export class AnalyticsService {
   async getAdminOverview() {
     const totalUsers = await this.usersRepository.count();
     const today = this.dateString();
-    const todayVisitors = await this.visitLogRepository.count({
-      where: { viewedOn: today },
-    });
+    const todayVisitors = await this.visitLogRepository
+      .createQueryBuilder('v')
+      .where("DATE_FORMAT(v.createdAt, '%Y-%m-%d') = :today", { today })
+      .getCount();
     const workbookAccuracy = await this.getWorkbookAccuracy(10);
 
     return {
