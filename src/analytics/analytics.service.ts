@@ -869,8 +869,13 @@ export class AnalyticsService {
   }
 
   private async buildDailyVisitors(days = 30) {
-    const since = this.kstMidnightCalendarInclusiveRangeStart(days);
-    const dateExpr = "DATE_FORMAT(v.createdAt, '%Y-%m-%d')";
+    const safeDays = Math.max(1, days);
+    const todayYmd = this.dateString();
+    const minViewedOn = this.subtractCalendarDaysFromYmd(
+      todayYmd,
+      safeDays - 1,
+    );
+    const dateExpr = "DATE_FORMAT(v.viewedOn, '%Y-%m-%d')";
     const rows = await this.visitLogRepository
       .createQueryBuilder('v')
       .select(dateExpr, 'date')
@@ -887,7 +892,8 @@ export class AnalyticsService {
         "SUM(CASE WHEN v.visitorType IS NULL OR v.visitorType = 'unknown' THEN 1 ELSE 0 END)",
         'unknown',
       )
-      .where('v.createdAt >= :since', { since })
+      .where('v.viewedOn >= :minViewedOn', { minViewedOn })
+      .andWhere('v.viewedOn <= :maxViewedOn', { maxViewedOn: todayYmd })
       .groupBy(dateExpr)
       .orderBy(dateExpr, 'ASC')
       .getRawMany<{
@@ -909,7 +915,7 @@ export class AnalyticsService {
 
   private async buildMonthlyVisitors(months = 12) {
     const minYm = this.kstMinYmRolling(months);
-    const monthExpr = "DATE_FORMAT(v.createdAt, '%Y-%m')";
+    const monthExpr = "DATE_FORMAT(v.viewedOn, '%Y-%m')";
     const rows = await this.visitLogRepository
       .createQueryBuilder('v')
       .select(monthExpr, 'month')
@@ -1010,7 +1016,7 @@ export class AnalyticsService {
     const today = this.dateString();
     const todayVisitors = await this.visitLogRepository
       .createQueryBuilder('v')
-      .where("DATE_FORMAT(v.createdAt, '%Y-%m-%d') = :today", { today })
+      .where('v.viewedOn = :today', { today })
       .getCount();
     const workbookAccuracy = await this.getWorkbookAccuracy(10);
 
