@@ -646,6 +646,16 @@ export class AuthService {
     return this.analyticsService.getGlobalWeakCategories();
   }
 
+  /** 개인 학습 통계: 전체 응답 정답률 + 문제집별 최초 제출 성적 및 제출 횟수 */
+  async getMyLearningStats(userId: number) {
+    return this.analyticsService.getMyLearningStats(userId);
+  }
+
+  /** 문제집별 회차 채점·오답 노트 조회 */
+  async getWorkbookReview(userId: number, workbookId: string) {
+    return this.analyticsService.getWorkbookReviewSessions(userId, workbookId);
+  }
+
   createTokenResponse(user: {
     id: number;
     email: string;

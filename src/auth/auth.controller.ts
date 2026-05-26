@@ -145,6 +145,23 @@ export class AuthController {
     return this.authService.getGlobalWeakCategories();
   }
 
+  // 개인 학습 통계: 전체 정답률·문제집별 최초 제출 성적
+  @UseGuards(JwtAuthGuard)
+  @Get('me/learning-stats')
+  getMyLearningStats(@Req() req: RequestWithUser) {
+    return this.authService.getMyLearningStats(req.user.sub);
+  }
+
+  // 문제집 채점 이력·오답 노트(회차별)
+  @UseGuards(JwtAuthGuard)
+  @Get('me/workbooks/:workbookId/review')
+  getWorkbookReview(
+    @Req() req: RequestWithUser,
+    @Param('workbookId') workbookId: string,
+  ) {
+    return this.authService.getWorkbookReview(req.user.sub, workbookId);
+  }
+
   // 문제집 풀이 완료 처리: 사용자 프로필의 solvedWorkbookIds에 문제집을 기록한다.
   @UseGuards(JwtAuthGuard)
   @Post('me/solved-workbooks/:workbookId')

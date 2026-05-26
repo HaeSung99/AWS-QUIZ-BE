@@ -9,7 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { Model, Types } from 'mongoose';
 import OpenAI from 'openai';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import {
   QuestionItem,
   QuestionItemDocument,
@@ -354,6 +354,222 @@ export class AnalyticsService {
 
     // 재제출: 정답률 집계는 최초 제출 1건만 유지 (이후 제출은 DB에 반영하지 않음)
     return { saved: true };
+  }
+
+  /**
+   * 제출 세션 구분: bulk insert 된 문항별 기록은 동일한 createdAt을 가진다고 보고 같은 시각끼리 묶는다.
+   */
+  private bucketQuestionAttemptsBySubmission(
+    attempts: QuestionAttempt[],
+  ): QuestionAttempt[][] {
+    const sorted = [...attempts].sort((a, b) => a.id - b.id);
+    const buckets: QuestionAttempt[][] = [];
+    let current: QuestionAttempt[] = [];
+    let lastTs: number | undefined;
+    for (const row of sorted) {
+      const ts = row.createdAt?.getTime() ?? 0;
+      if (current.length > 0 && lastTs !== undefined && ts !== lastTs) {
+        buckets.push(current);
+        current = [];
+      }
+      current.push(row);
+      lastTs = ts;
+    }
+    if (current.length > 0) buckets.push(current);
+    return buckets;
+  }
+
+  /** 사용자 전체 문제 응답 기록 및 문제집(최초 제출) 요약 통계 */
+  async getMyLearningStats(userId: number) {
+    const overallAgg = await this.questionAttemptRepository
+      .createQueryBuilder('qa')
+      .select('COUNT(*)', 'total')
+      .addSelect(
+        `SUM(CASE WHEN qa.isCorrect = true THEN 1 ELSE 0 END)`,
+        'correct',
+      )
+      .where('qa.userId = :userId', { userId })
+      .getRawOne<{ total: string; correct: string | null }>();
+
+    const totalQuestions = Number(overallAgg?.total ?? 0);
+    const overallCorrect = Number(overallAgg?.correct ?? 0);
+    const overallAccuracy =
+      totalQuestions > 0
+        ? Number(((overallCorrect / totalQuestions) * 100).toFixed(1))
+        : null;
+
+    const workbookRows = await this.workbookAttemptRepository.find({
+      where: { userId },
+      order: { workbookId: 'ASC' },
+    });
+
+    const workbookIds = workbookRows.map((r) => r.workbookId).filter(Boolean);
+    const workbookQuestionTitles = workbookIds.length
+      ? await this.questionModel
+          .find({ _id: { $in: workbookIds.map((id) => new Types.ObjectId(id)) } })
+          .select({ _id: 1, title: 1 })
+          .lean()
+          .exec()
+      : [];
+    const titleMap = new Map(
+      workbookQuestionTitles.map((q) => [String(q._id), q.title as string]),
+    );
+
+    const sessionShells = await this.questionAttemptRepository.find({
+      where: { userId, workbookId: Not(IsNull()) },
+      select: {
+        id: true,
+        workbookId: true,
+        createdAt: true,
+      },
+      order: { id: 'ASC' },
+    });
+    const byWorkbookSessions = new Map<string, QuestionAttempt[]>();
+    for (const shell of sessionShells) {
+      const wid = shell.workbookId!;
+      const list = byWorkbookSessions.get(wid) ?? [];
+      list.push(shell as QuestionAttempt);
+      byWorkbookSessions.set(wid, list);
+    }
+    const sessionCountMap = new Map<string, number>();
+    for (const [wid, list] of byWorkbookSessions) {
+      sessionCountMap.set(
+        wid,
+        this.bucketQuestionAttemptsBySubmission(list).length,
+      );
+    }
+
+    const workbooks = workbookRows.map((row) => {
+      const pct =
+        row.totalCount > 0
+          ? Number(((row.correctCount / row.totalCount) * 100).toFixed(1))
+          : 0;
+      return {
+        workbookId: row.workbookId,
+        title: titleMap.get(row.workbookId) ?? row.workbookId,
+        accuracy: pct,
+        correctCount: row.correctCount,
+        totalCount: row.totalCount,
+        sessionCount: sessionCountMap.get(row.workbookId) ?? 0,
+      };
+    });
+
+    return {
+      overall: {
+        totalCount: totalQuestions,
+        correctCount: overallCorrect,
+        accuracy:
+          overallAccuracy === null ? null : (overallAccuracy as number),
+      },
+      workbooks,
+    };
+  }
+
+  /** 문제집별 제출 회차별 오답 노트 조회 */
+  async getWorkbookReviewSessions(userId: number, workbookId: string) {
+    const trimmed = workbookId.trim();
+    if (!trimmed) return { workbookId: '', title: '', sessions: [] };
+
+    const attempts = await this.questionAttemptRepository.find({
+      where: { userId, workbookId: trimmed },
+      order: { id: 'ASC' },
+    });
+    if (attempts.length === 0) {
+      return { workbookId: trimmed, title: '', sessions: [] };
+    }
+
+    const workbookDoc = await this.questionModel
+      .findById(trimmed)
+      .select({ title: 1 })
+      .lean()
+      .exec();
+    const workbookTitle =
+      workbookDoc &&
+      typeof (workbookDoc as { title?: string }).title === 'string'
+        ? (workbookDoc as { title: string }).title
+        : '';
+
+    const buckets = this.bucketQuestionAttemptsBySubmission(attempts);
+    const descending = buckets.slice().reverse();
+
+    const allQuestionIds = [
+      ...new Set(attempts.map((a) => a.questionId).filter(Boolean)),
+    ];
+    const objectIds = allQuestionIds
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    const mongoItems =
+      objectIds.length > 0
+        ? await this.questionItemModel
+            .find({ _id: { $in: objectIds } })
+            .select({
+              questionDescription: 1,
+              choices: 1,
+              questionNumber: 1,
+              difficulty: 1,
+              questionCategory: 1,
+            })
+            .lean()
+            .exec()
+        : [];
+    const itemMap = new Map(
+      mongoItems.map((doc) => {
+        const d = doc as {
+          _id: Types.ObjectId;
+          questionDescription?: string;
+          choices?: string[];
+          questionNumber?: number;
+          difficulty?: string;
+          questionCategory?: string;
+        };
+        return [
+          String(d._id),
+          {
+            questionNumber: d.questionNumber ?? 0,
+            questionDescription: d.questionDescription ?? '',
+            choices: Array.isArray(d.choices) ? d.choices : [],
+            difficulty: d.difficulty ?? '',
+            questionCategory: d.questionCategory ?? '',
+          },
+        ];
+      }),
+    );
+
+    const sessions = descending.map((batch) => {
+      const submittedAt =
+        batch[0]?.createdAt?.toISOString() ?? new Date().toISOString();
+      let correctCt = 0;
+      const items = batch.map((attempt) => {
+        const meta = itemMap.get(attempt.questionId) ?? null;
+        if (attempt.isCorrect) correctCt += 1;
+        return {
+          questionId: attempt.questionId,
+          questionNumber: meta?.questionNumber ?? 0,
+          questionDescription: meta?.questionDescription ?? '',
+          choices: meta?.choices ?? [],
+          difficulty: meta?.difficulty ?? attempt.difficulty,
+          questionCategory: meta?.questionCategory ?? attempt.questionCategory,
+          selectedAnswer: attempt.selectedAnswer,
+          correctAnswer: attempt.correctAnswer,
+          isCorrect: attempt.isCorrect,
+        };
+      });
+      const tc = batch.length;
+      const acc = tc > 0 ? Number(((correctCt / tc) * 100).toFixed(1)) : 0;
+      return {
+        submittedAt,
+        accuracy: acc,
+        correctCount: correctCt,
+        totalCount: tc,
+        items,
+      };
+    });
+
+    return {
+      workbookId: trimmed,
+      title: workbookTitle,
+      sessions,
+    };
   }
 
   private async getPublishedQuestionItems(certificationType?: string | null) {
