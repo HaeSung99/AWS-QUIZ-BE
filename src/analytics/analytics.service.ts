@@ -262,6 +262,12 @@ export class AnalyticsService {
     }
   }
 
+  /**
+   * [프론트] POST /public/track-visit 에서 호출됨(body: clientKey, eventType, isLoggedIn 등)
+   * -> 방문 테이블(visit_logs)에서 동일 클라이언트·KST 오늘 날짜 행 존재 여부 검색
+   * -> 이벤트(page_view/dwell 등)를 누적하고 봇/인간(visitorType) 판별 후 저장
+   * -> 반환: { tracked, visitorType } 로 프론트 track-visit 응답에 사용됨.
+   */
   async trackVisit(dto: TrackVisitDto, meta?: { userAgent?: string | null }) {
     const clientKey = dto.clientKey.trim();
     if (!clientKey) return { tracked: false };
@@ -291,6 +297,13 @@ export class AnalyticsService {
     return { tracked: true, visitorType: created.visitorType };
   }
 
+  /**
+   * [프론트] POST /auth/me/workbook-attempts(Auth 제외 admin) 에서 호출됨
+   * (포함 데이터: workbookId 선택, 문항별 questionAttempts[] — 선택 보기·정답 문자열·정오·카테고리 등)
+   * -> 검색 question_attempts: userId(+선택 workbookId)로 모든 제출 회차별 문항 단위 행 저장
+   * -> 검색 workbook_attempts: userId + workbookId 기준 최초 1건 없을 때만 correctCount/totalCount 저장, 이후 재제출은 스킵
+   * -> 제공: 학습통계/Aggregate는 별도 도메인 호출하지만 저장 데이터가 통합분석·홈 문제집 통계 재료가 됨
+   */
   async recordWorkbookAttempt(input: {
     userId: number;
     workbookId?: string;
@@ -335,7 +348,7 @@ export class AnalyticsService {
     if (!workbookId) {
       return { saved: true };
     }
-
+    
     const existing = await this.workbookAttemptRepository.findOne({
       where: { userId: input.userId, workbookId },
     });
@@ -357,7 +370,9 @@ export class AnalyticsService {
   }
 
   /**
-   * 제출 세션 구분: bulk insert 된 문항별 기록은 동일한 createdAt을 가진다고 보고 같은 시각끼리 묶는다.
+   * [보조함수] 이미 같은 user/workbook 에 대해 불러온 question_attempts 배열만 받음(API 직연결 없음).
+   * -> 검색 없음. id 순으로 정렬 후 createdAt(ms)이 바뀌는 구간마다 새 “제출 1회” 버킷으로 분리
+   * -> 제공: getMyLearningStats의 sessionCount, getWorkbookReviewSessions의 회차 분할에 재사용
    */
   private bucketQuestionAttemptsBySubmission(
     attempts: QuestionAttempt[],
@@ -379,7 +394,14 @@ export class AnalyticsService {
     return buckets;
   }
 
-  /** 사용자 전체 문제 응답 기록 및 문제집(최초 제출) 요약 통계 */
+  /**
+   * [프론트] GET /auth/me/learning-stats (Jwt userId 파라미터로 전달됨).
+   * -> 검색 question_attempts 에서 해당 userId 전체 카운트·정답 합계 - 통합 정답률(카테고리/추천 문항 포함)
+   * -> 검색 workbook_attempts 에서 userId별 행 목록 - 문제집별 최초 제출 점수(정답률 표시용)
+   * -> 검색 Mongo questions (_id workbookId 매칭) 로 문제집 제목
+   * -> 검색 question_attempts 중 workbookId not null 에 대해 버킷 수 - 같은 문제집 제출 회차(sessionCount)
+   * -> 제공: 프론트에 { overall:{ totalCount, correctCount, accuracy }, workbooks:[…] }
+   */
   async getMyLearningStats(userId: number) {
     const overallAgg = await this.questionAttemptRepository
       .createQueryBuilder('qa')
@@ -465,7 +487,12 @@ export class AnalyticsService {
     };
   }
 
-  /** 문제집별 제출 회차별 오답 노트 조회 */
+  /**
+   * [프론트] GET /auth/me/workbooks/:workbookId/review 경로 매개변수 workbookId(+Jwt userId).
+   * -> 검색 question_attempts 에서 userId + workbookId 전체 행 시간순 저장분
+   * -> 검색 Mongo questions 로 문제집 제목, Mongo question_items 로 문항 본문·선택지·번호·카테고리
+   * -> 제공: 회차별(sessions 최신먼저) 각 문항에 대해 선택답·정답 보기 문자열·정오·스템 요약 포함 JSON
+   */
   async getWorkbookReviewSessions(userId: number, workbookId: string) {
     const trimmed = workbookId.trim();
     if (!trimmed) return { workbookId: '', title: '', sessions: [] };
@@ -572,6 +599,12 @@ export class AnalyticsService {
     };
   }
 
+  /**
+   * [보조] 약점 추천·오늘의 문제·임베딩 후보 만들 때 재사용(컨트롤러 노출 안 함).
+   * -> 검색 Mongo questions 상태≠draft 및 선택 시 certificationType 일치 하는 문제집 _id 들
+   * -> 검색 Mongo question_items questionId 로 전체 게시 문항 문서 목록 반환
+   * -> 제공: 다른 메서드가 이 문항 배열에서 임베딩/유사도/랜덤 추출을 수행
+   */
   private async getPublishedQuestionItems(certificationType?: string | null) {
     const questionFilter: { status: { $ne: 'draft' }; certificationType?: string } =
       { status: { $ne: 'draft' } };
@@ -595,6 +628,12 @@ export class AnalyticsService {
       .exec();
   }
 
+  /**
+   * [보조] 문항별 embedding 테이블(question_embeddings)을 동기화. 직호출 거의 없고 sync* 경유.
+   * -> 검색 question_embeddings 해당 questionIds 기존 행 및 Mongo questions 로 자격증 타입 매핑
+   * -> OpenAI 임베딩 재계산 후 contentHash 변경 시 업데이트
+   * -> 제공: 반환 행 객체를 getRecommendedQuestions 등이 코사인 유사도 계산할 때 재사용
+   */
   private async ensureQuestionEmbeddings(items: QuestionItemDocument[]) {
     if (items.length === 0) return [];
 
@@ -643,8 +682,9 @@ export class AnalyticsService {
   }
 
   /**
-   * 게시된 문제집의 모든 문항에 대해 임베딩을 생성하거나 본문이 바뀐 경우 갱신합니다.
-   * draft 상태에서는 호출하지 않는 것을 권장합니다.
+   * [백오피스/내부] 문제집(Mongo 문제집 _id 문자열 워크북 단위 전체 문항 재임베딩 필요 시).
+   * -> 검색 Mongo question_items questionId 로 모든 문항
+   * -> ensureQuestionEmbeddings 일괄 호출 결과 DB 반영
    */
   async syncQuestionEmbeddingsForWorkbook(workbookMongoId: string): Promise<void> {
     const items = await this.questionItemModel
@@ -654,11 +694,22 @@ export class AnalyticsService {
     await this.ensureQuestionEmbeddings(items);
   }
 
-  /** 게시 상태에서 특정 문항만 저장했을 때 해당 문항 임베딩만 동기화합니다. */
+  /**
+   * [백오피스/내부] 단일 문항 저장 직후 임베딩만 업데이트할 때 호출됨(admin 파이프라인 등).
+   * -> 검색/제공 로직 동일 하나의 아이템만 ensureQuestionEmbeddings 로 전달
+   */
   async syncQuestionEmbeddingForItem(item: QuestionItemDocument): Promise<void> {
     await this.ensureQuestionEmbeddings([item]);
   }
 
+  /**
+   * [프론트] GET /auth/me/recommended-questions(limit, 사용자 목표 자격증 선택 시 필터 포함).
+   * -> 검색 question_attempts 최근 DESC 50건·userId (불충족 시 BadRequest, 전체 정답이면 빈 배열)
+   * -> 검색 getPublishedQuestionItems 목표 자격증 기준 문항 + ensureQuestionEmbeddings 로 벡터
+   * -> 검색 question_embeddings 풀이에 등장한 questionId 들의 임베딩(공개 목록 외 과거 문제도 포함) 병합
+   * -> 약점 벡터: 오답은 임베딩 더함·정답은 소폭 뺌, 시간감쇠 후 게시 문항 임베딩과 유사도+페널티로 정렬
+   * -> 제공: 퀴즈 화면용 문제 배열(similarity, 추천 사유 문자열 포함)
+   */
   async getRecommendedQuestions(
     userId: number,
     limit = 20,
@@ -811,6 +862,12 @@ export class AnalyticsService {
     });
   }
 
+  /**
+   * [프론트] GET /auth/me/daily-questions (필요: 사용자 목표 자격증 문자열 파라미터).
+   * -> 검색 getPublishedQuestionItems(certificationType) 로 후보 문제집 전체 게시 문항
+   * -> 날짜+user+certification+문항id 해시 시드 정렬 후 limit 자름(하루 동안 동일 순서 의도).
+   * -> 제공: 랜덤 추천 사유 문자열 포함 일반 문제 JSON 배열(OpenAI 호출 없음).
+   */
   async getDailyQuestions(
     userId: number,
     targetCertificationType: string,
@@ -847,6 +904,13 @@ export class AnalyticsService {
     );
   }
 
+  /**
+   * [프론트] GET /auth/me/weakness-comment(Jwt).
+   * -> 검색 question_attempts 최근 50건 userId 분량 부족 시 안내 문자열만 반환 ready=false
+   * -> 유형(questionCategory)별 오답/정답 요약 만들고 getRecommendedQuestions(5건) 결과와 결합해 프롬프트 구성
+   * -> 검색 user_weakness_comments 해당 user + KST 날짜 동일 행이 있으면 오늘 캐시로 즉시 반환
+   * -> 없으면 OpenAI 채팅 한 번 호출 후 캐시 저장·하루 1회 생성 제한 목적으로 comment 제공.
+   */
   async getWeaknessComment(userId: number) {
     // 1. AI 코멘트도 현재 상태를 말해야 하므로 최근 풀이 기록만 본다.
     const attempts = await this.questionAttemptRepository.find({
@@ -984,6 +1048,9 @@ export class AnalyticsService {
     };
   }
 
+  /**
+   * [보조] 위 약점 쿼리 raw row 를 DTO 형태(total/correct/wrong/wrongRate)로 변환(API 직통 없음).
+   */
   private mapWeakCategoryRows(
     rows: Array<{
       category: string;
@@ -1007,6 +1074,11 @@ export class AnalyticsService {
     });
   }
 
+  /**
+   * [프론트] GET /auth/me/weak-categories(limit, Jwt userId).
+   * -> 검색 question_attempts SQL GROUP BY questionCategory 해당 사용자만 필터링
+   * -> 제공: 카테고리별 total/correct/wrong/wrongRate 정렬 목록(홈 “내 자주 틀리는 유형” 카드 등).
+   */
   async getPersonalWeakCategories(userId: number, limit = 5) {
     const rows = await this.questionAttemptRepository
       .createQueryBuilder('qa')
@@ -1031,6 +1103,11 @@ export class AnalyticsService {
     return this.mapWeakCategoryRows(rows);
   }
 
+  /**
+   * [프론트] GET /auth/weak-categories/global (인증 Jwt 필요하지만 userId 무관 전역 집계).
+   * -> 검색 question_attempts 전 사용자 전체(questionCategory별 aggregate)
+   * -> 제공: 전체 학습 트렌드용 카테고리 오답률 순 테이블(개인값 혼합 아님).
+   */
   async getGlobalWeakCategories(limit = 5) {
     const rows = await this.questionAttemptRepository
       .createQueryBuilder('qa')
@@ -1054,6 +1131,11 @@ export class AnalyticsService {
     return this.mapWeakCategoryRows(rows);
   }
 
+  /**
+   * [관리 보조·getAdminOverview 전용일 뿐] 일/월 단위 회원 가입 추이(users) 및 방문 visit_logs 집계.
+   * -> users.createdAt 또는 visit_logs.viewedOn KST 문자열 단위 그룹
+   * -> 제공: 일별 가입건수, 월별 가입건수, 일별 방문(전체·human·bot·unknown) 시계열.
+   */
   private async buildDailyUserSignups(days = 30) {
     const since = this.kstMidnightCalendarInclusiveRangeStart(days);
     const dateExpr = "DATE_FORMAT(u.createdAt, '%Y-%m-%d')";
@@ -1168,6 +1250,12 @@ export class AnalyticsService {
     }));
   }
 
+  /**
+   * [프론트] GET /public/workbooks/accuracy (관리자 대시보드에서는 동일 함수에 limit 으로 상위만 조회 가능).
+   * -> 검색 workbook_attempts + users inner join 역할 user 일반만 집계(관리자 제출 제외)
+   * -> Mongo questions 상태 published 인 문제집만 남김 후 workbookId별 정답 합/total합/참여인원 카운트
+   * -> 제공: 홈 문제집 목록에 쓰이는 문제집 제목·전체 참여 평균 정답률·participant 수 배열 JSON.
+   */
   async getWorkbookAccuracy(limit?: number) {
     const query = this.workbookAttemptRepository
       .createQueryBuilder('a')
@@ -1227,6 +1315,12 @@ export class AnalyticsService {
       });
   }
 
+  /**
+   * [프론트/관리] GET /admin/stats/overview 등에서 사용, 컨트롤러가 이 서비스 함수 조합.
+   * -> users 총원, visit_logs 오늘 KST 방문 수, getWorkbookAccuracy(10) 상위 문제집 통계
+   * -> buildDaily/Monthly* 로 가입·방문 시계열 보조데이터 수집
+   * -> 제공: 대시보드 한 화면에 필요한 요약 JSON 묶음.
+   */
   async getAdminOverview() {
     const totalUsers = await this.usersRepository.count();
     const today = this.dateString();
