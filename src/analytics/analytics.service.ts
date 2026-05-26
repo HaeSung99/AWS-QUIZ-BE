@@ -491,7 +491,7 @@ export class AnalyticsService {
    * [프론트] GET /auth/me/workbooks/:workbookId/review 경로 매개변수 workbookId(+Jwt userId).
    * -> 검색 question_attempts 에서 userId + workbookId 전체 행 시간순 저장분
    * -> 검색 Mongo questions 로 문제집 제목, Mongo question_items 로 문항 본문·선택지·번호·카테고리
-   * -> 제공: 회차별(sessions 최신먼저) 각 문항에 대해 선택답·정답 보기 문자열·정오·스템 요약 포함 JSON
+   * -> 제공: 회차별(sessions 첫 제출→최근 순, 제출 #1 이 최초 회차) 문항별 선택답·정답 문자열·정오·스템 요약 JSON
    */
   async getWorkbookReviewSessions(userId: number, workbookId: string) {
     const trimmed = workbookId.trim();
@@ -517,7 +517,6 @@ export class AnalyticsService {
         : '';
 
     const buckets = this.bucketQuestionAttemptsBySubmission(attempts);
-    const descending = buckets.slice().reverse();
 
     const allQuestionIds = [
       ...new Set(attempts.map((a) => a.questionId).filter(Boolean)),
@@ -562,7 +561,7 @@ export class AnalyticsService {
       }),
     );
 
-    const sessions = descending.map((batch) => {
+    const sessions = buckets.map((batch) => {
       const submittedAt =
         batch[0]?.createdAt?.toISOString() ?? new Date().toISOString();
       let correctCt = 0;
