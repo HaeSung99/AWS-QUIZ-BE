@@ -27,7 +27,11 @@ import { JwtStrategy } from './jwt.strategy';
 
         return {
           secret: jwtSecret,
-          signOptions: { expiresIn: '1d' },
+          signOptions: {
+            expiresIn:
+              (configService.get<string>('JWT_ACCESS_EXPIRES') ??
+                '15m') as `${number}${'s' | 'm' | 'h' | 'd'}`,
+          },
         };
       },
     }),

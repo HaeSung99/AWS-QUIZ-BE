@@ -15,6 +15,7 @@ import { AuthService } from './auth.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RecordWorkbookAttemptDto } from './dto/record-workbook-attempt.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { SendEmailCodeDto } from './dto/send-email-code.dto';
 import { SignupDto } from './dto/signup.dto';
@@ -51,6 +52,19 @@ export class AuthController {
   @Post('login')
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  // access JWT 만료 시 refreshToken(DB 세션) 검증 후 access·refresh 재발급
+  @Post('refresh')
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refreshAccessToken(dto.refreshToken);
+  }
+
+  // 로그아웃: DB에 저장된 refresh 세션 무효화
+  @UseGuards(JwtAuthGuard)
+  @Post('logout')
+  logout(@Req() req: RequestWithUser) {
+    return this.authService.logout(req.user.sub);
   }
 
   // 비밀번호 찾기 인증코드 발송: 가입된 이메일에 대해서만 재설정 코드를 보낸다.

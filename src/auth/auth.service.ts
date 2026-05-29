@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { compare, hash } from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import * as nodemailer from 'nodemailer';
 import { MoreThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
@@ -29,6 +30,8 @@ const IP_SEND_MAX_PER_KST_DAY = 20;
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const SIGNUP_EMAIL_PURPOSE = 'signup' as const;
 const PASSWORD_RESET_EMAIL_PURPOSE = 'password_reset' as const;
+/** 리프레시 토큰 유효 기간(일) — 갱신 시마다 연장 */
+const REFRESH_TOKEN_TTL_DAYS = 7;
 const AWS_CERTIFICATION_OPTIONS = [
   'SAA-C03',
   'CLF-C02',
@@ -313,7 +316,7 @@ export class AuthService {
     });
 
     // 3. 가입 직후 바로 로그인 상태가 되도록 토큰 응답을 반환한다.
-    return this.createTokenResponse({
+    return await this.createTokenResponse({
       id: user.id,
       email: user.email,
       name: user.name,
@@ -338,7 +341,7 @@ export class AuthService {
     }
 
     // 2. 인증에 성공하면 프론트가 저장할 토큰과 사용자 정보를 반환한다.
-    return this.createTokenResponse({
+    return await this.createTokenResponse({
       id: user.id,
       email: user.email,
       name: user.name,
@@ -427,6 +430,7 @@ export class AuthService {
 
     const hashedPassword = await hash(dto.newPassword, 10);
     await this.usersService.updatePassword(userId, hashedPassword);
+    await this.usersService.clearRefreshToken(userId);
     return { changed: true };
   }
 
@@ -570,6 +574,7 @@ export class AuthService {
     // 2. 새 비밀번호를 저장하고 사용한 인증 기록은 제거한다.
     const hashedPassword = await hash(dto.newPassword, 10);
     await this.usersService.updatePassword(user.id, hashedPassword);
+    await this.usersService.clearRefreshToken(user.id);
     await this.emailVerificationRepository.delete({
       email,
       purpose: PASSWORD_RESET_EMAIL_PURPOSE,
@@ -664,18 +669,37 @@ export class AuthService {
     targetCertificationType?: string | null;
     solvedWorkbookIds: string[];
   }) {
-    // 1. JWT에는 인증과 권한 판단에 필요한 최소 사용자 정보만 넣는다.
+    return this.issueAuthTokens(user);
+  }
+
+  /**
+   * 1) access JWT 발급
+   * 2) refresh 원문 생성 → DB bcrypt 저장(세션) + 만료일 연장
+   */
+  private async issueAuthTokens(user: {
+    id: number;
+    email: string;
+    name: string;
+    role: 'user' | 'admin';
+    targetCertificationType?: string | null;
+    solvedWorkbookIds: string[];
+  }) {
     const payload = {
       sub: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
     };
-    const accessToken = this.jwtService.sign(payload);
+    const accessExpiresIn =
+      this.configService.get<string>('JWT_ACCESS_EXPIRES') ?? '15m';
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: accessExpiresIn as `${number}${'s' | 'm' | 'h' | 'd'}`,
+    });
+    const refreshToken = await this.rotateRefreshToken(user.id);
 
-    // 2. 프론트가 localStorage에 저장할 토큰과 사용자 정보를 함께 반환한다.
     return {
       accessToken,
+      refreshToken,
       user: {
         id: user.id,
         email: user.email,
@@ -685,5 +709,71 @@ export class AuthService {
         solvedWorkbookIds: user.solvedWorkbookIds,
       },
     };
+  }
+
+  private refreshTokenExpiresAt() {
+    return new Date(
+      Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
+    );
+  }
+
+  /** userId 접두 + UUID — refresh 시 userId로 DB 조회 후 해시 compare */
+  private async rotateRefreshToken(userId: number): Promise<string> {
+    const raw = `${userId}.${randomUUID()}`;
+    const refreshTokenHash = await hash(raw, 10);
+    await this.usersService.setRefreshToken(
+      userId,
+      refreshTokenHash,
+      this.refreshTokenExpiresAt(),
+    );
+    return raw;
+  }
+
+  /**
+   * access JWT 만료/없음 시: 클라이언트 refreshToken ↔ DB 해시 일치 + 만료 확인 → access·refresh 재발급
+   */
+  async refreshAccessToken(refreshToken: string) {
+    const trimmed = refreshToken.trim();
+    const dotIdx = trimmed.indexOf('.');
+    if (dotIdx <= 0) {
+      throw new UnauthorizedException('유효하지 않은 리프레시 토큰입니다.');
+    }
+
+    const userId = Number(trimmed.slice(0, dotIdx));
+    if (!Number.isFinite(userId) || userId <= 0) {
+      throw new UnauthorizedException('유효하지 않은 리프레시 토큰입니다.');
+    }
+
+    const user = await this.usersService.findByIdForRefresh(userId);
+    if (!user?.refreshToken || !user.refreshTokenExpiresAt) {
+      throw new UnauthorizedException('세션이 만료되었습니다. 다시 로그인해주세요.');
+    }
+
+    if (user.refreshTokenExpiresAt.getTime() < Date.now()) {
+      await this.usersService.clearRefreshToken(userId);
+      throw new UnauthorizedException('세션이 만료되었습니다. 다시 로그인해주세요.');
+    }
+
+    const matched = await compare(trimmed, user.refreshToken);
+    if (!matched) {
+      await this.usersService.clearRefreshToken(userId);
+      throw new UnauthorizedException('유효하지 않은 리프레시 토큰입니다.');
+    }
+
+    return this.issueAuthTokens({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      targetCertificationType: user.targetCertificationType,
+      solvedWorkbookIds: Array.isArray(user.solvedWorkbookIds)
+        ? user.solvedWorkbookIds
+        : [],
+    });
+  }
+
+  async logout(userId: number) {
+    await this.usersService.clearRefreshToken(userId);
+    return { loggedOut: true };
   }
 }

@@ -151,4 +151,38 @@ export class UsersService {
       ? saved.solvedWorkbookIds
       : [];
   }
+
+  async findByIdForRefresh(userId: number): Promise<User | null> {
+    return this.usersRepository.findOne({
+      where: { id: userId },
+      select: [
+        'id',
+        'email',
+        'name',
+        'role',
+        'solvedWorkbookIds',
+        'targetCertificationType',
+        'refreshToken',
+        'refreshTokenExpiresAt',
+      ],
+    });
+  }
+
+  async setRefreshToken(
+    userId: number,
+    refreshTokenHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await this.usersRepository.update(userId, {
+      refreshToken: refreshTokenHash,
+      refreshTokenExpiresAt: expiresAt,
+    });
+  }
+
+  async clearRefreshToken(userId: number): Promise<void> {
+    await this.usersRepository.update(userId, {
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+    });
+  }
 }

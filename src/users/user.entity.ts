@@ -33,6 +33,13 @@ export class User {
   @Column({ type: 'varchar', length: 20, nullable: true })
   targetCertificationType: string | null;
 
+  /** bcrypt 해시 — 클라이언트가 보낸 refreshToken 원문과 compare로 세션 검증 */
+  @Column({ type: 'varchar', length: 255, nullable: true, select: false })
+  refreshToken: string | null;
+
+  @Column({ type: 'datetime', nullable: true, select: false })
+  refreshTokenExpiresAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
