@@ -3,30 +3,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './user.entity';
 
-const AWS_CERTIFICATION_OPTIONS = [
-  'SAA-C03',
-  'CLF-C02',
-  'DVA-C02',
-  'SOA-C02',
-  'SAP-C02',
-  'DOP-C02',
-  'SCS-C02',
-  'ANS-C01',
-  'MLS-C01',
-  'DEA-C01',
-  'AIF-C01',
-] as const;
-
-function normalizeTargetCertification(value?: string | null) {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed === '정하지 않음') return null;
-  return AWS_CERTIFICATION_OPTIONS.includes(
-    trimmed as (typeof AWS_CERTIFICATION_OPTIONS)[number],
-  )
-    ? trimmed
-    : null;
-}
-
 @Injectable()
 export class UsersService {
   constructor(
@@ -94,14 +70,13 @@ export class UsersService {
     targetCertificationType?: string | null;
   }): Promise<User> {
     // 1. 이메일과 이름을 정리한 뒤 일반 사용자 기본값으로 계정을 만든다.
+    const cert = input.targetCertificationType?.trim() || null;
     const user = this.usersRepository.create({
       email: input.email.toLowerCase().trim(),
       name: input.name.trim(),
       password: input.password,
       solvedWorkbookIds: [],
-      targetCertificationType: normalizeTargetCertification(
-        input.targetCertificationType,
-      ),
+      targetCertificationType: cert,
     });
     return this.usersRepository.save(user);
   }
@@ -110,13 +85,12 @@ export class UsersService {
     userId: number,
     targetCertificationType?: string | null,
   ): Promise<User | null> {
-    // 1. 사용자를 찾고, 목표 자격증은 허용된 값 또는 null로만 저장한다.
+    // 1. 사용자를 찾고 목표 자격증을 저장한다.
     const user = await this.findById(userId);
     if (!user) return null;
 
-    user.targetCertificationType = normalizeTargetCertification(
-      targetCertificationType,
-    );
+    user.targetCertificationType =
+      targetCertificationType?.trim() || null;
     return this.usersRepository.save(user);
   }
 

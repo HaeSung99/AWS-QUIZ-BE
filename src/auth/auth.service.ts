@@ -32,29 +32,6 @@ const SIGNUP_EMAIL_PURPOSE = 'signup' as const;
 const PASSWORD_RESET_EMAIL_PURPOSE = 'password_reset' as const;
 /** 리프레시 토큰 유효 기간(일) — 갱신 시마다 연장 */
 const REFRESH_TOKEN_TTL_DAYS = 7;
-const AWS_CERTIFICATION_OPTIONS = [
-  'SAA-C03',
-  'CLF-C02',
-  'DVA-C02',
-  'SOA-C02',
-  'SAP-C02',
-  'DOP-C02',
-  'SCS-C02',
-  'ANS-C01',
-  'MLS-C01',
-  'DEA-C01',
-  'AIF-C01',
-] as const;
-
-function normalizeTargetCertification(value?: string | null) {
-  const trimmed = value?.trim();
-  if (!trimmed || trimmed === '정하지 않음') return null;
-  return AWS_CERTIFICATION_OPTIONS.includes(
-    trimmed as (typeof AWS_CERTIFICATION_OPTIONS)[number],
-  )
-    ? trimmed
-    : null;
-}
 
 @Injectable()
 export class AuthService {
@@ -388,13 +365,10 @@ export class AuthService {
     userId: number,
     dto: UpdateTargetCertificationDto,
   ) {
-    // 1. 목표 자격증은 허용된 AWS 자격증 값 또는 null로 저장한다.
-    const targetCertificationType = normalizeTargetCertification(
-      dto.targetCertificationType,
-    );
+    // 1. 목표 자격증을 저장한다.
     const user = await this.usersService.updateTargetCertification(
       userId,
-      targetCertificationType,
+      dto.targetCertificationType,
     );
     if (!user) {
       throw new UnauthorizedException('사용자 정보를 찾을 수 없습니다.');
